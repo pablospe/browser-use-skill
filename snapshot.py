@@ -155,9 +155,11 @@ SCAN_JS = r"""
     if (el.disabled) entry.disabled = true;
     if (el.validity && !el.validity.valid && el.value !== '') entry.invalid = true;
 
+    entry.num = idx;
+
     // Track for highlighting
     if (highlight && rect.width > 0 && rect.height > 0) {
-      hlPairs.push({ el, ref, color: hlColors[role] || '#6b7280' });
+      hlPairs.push({ el, ref, num: idx, color: hlColors[role] || '#6b7280' });
     }
 
     results.push(entry);
@@ -168,7 +170,7 @@ SCAN_JS = r"""
   if (highlight && hlPairs.length > 0) {
     const positionOverlays = () => {
       document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
-      hlPairs.forEach(({ el, ref, color }) => {
+      hlPairs.forEach(({ el, ref, num, color }) => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
         const ov = document.createElement('div');
@@ -178,7 +180,7 @@ SCAN_JS = r"""
         const bd = document.createElement('span');
         bd.setAttribute('data-bu-highlight', '1');
         bd.setAttribute('data-bu-hl-overlay', '1');
-        bd.textContent = ref;
+        bd.textContent = `${num}:${ref}`;
         bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
         document.body.appendChild(ov);
         document.body.appendChild(bd);
@@ -349,11 +351,13 @@ TREE_JS = r"""
       if (child.disabled) entry.disabled = true;
       if (child.validity && !child.validity.valid && child.value !== '') entry.invalid = true;
 
+      entry.num = idx;
+
       // Track for highlighting
       if (highlight) {
         const rect = child.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          hlPairs.push({ el: child, ref, color: hlColors[role] || '#6b7280' });
+          hlPairs.push({ el: child, ref, num: idx, color: hlColors[role] || '#6b7280' });
         }
       }
 
@@ -375,7 +379,7 @@ TREE_JS = r"""
   if (highlight && hlPairs.length > 0) {
     const positionOverlays = () => {
       document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
-      hlPairs.forEach(({ el, ref, color }) => {
+      hlPairs.forEach(({ el, ref, num, color }) => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
         const ov = document.createElement('div');
@@ -385,7 +389,7 @@ TREE_JS = r"""
         const bd = document.createElement('span');
         bd.setAttribute('data-bu-highlight', '1');
         bd.setAttribute('data-bu-hl-overlay', '1');
-        bd.textContent = ref;
+        bd.textContent = `${num}:${ref}`;
         bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
         document.body.appendChild(ov);
         document.body.appendChild(bd);
@@ -430,12 +434,14 @@ def format_element(el: dict) -> str:
     depth = el.get("depth", 0)
     indent = "  " * (depth + 1)
 
+    num = el.get("num", "")
     parts = [f'{indent}- {role}']
     if label:
         # Truncate very long labels
         if len(label) > 80:
             label = label[:77] + "..."
         parts.append(f' "{label}"')
+    parts.append(f' #{num}' if num != "" else '')
     parts.append(f' [{ref}]')
 
     if el.get("level"):
