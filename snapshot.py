@@ -11,24 +11,36 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent
 SNAPSHOT_DIR = SKILL_DIR / ".browser-use"
 
-# JS that scans the entire DOM for interactive elements and their labels.
-# Returns JSON with url, title, elements[]. Uses name/id as stable ref.
-# Optionally injects highlight overlays.
+# JS that scans the entire DOM for all interactive and structural elements.
+# Returns JSON with url, title, elements[].
+# Default: all interactive elements (links, buttons, inputs, nav, headings, images).
+# With formsOnly=true: only form elements (input, select, textarea, button).
 SCAN_JS = r"""
-((highlight) => {
+((highlight, formsOnly) => {
   // Remove previous highlights
   document.querySelectorAll('[data-bu-highlight]').forEach(el => el.remove());
 
   const getLabel = (el) => {
-    // 1. Explicit <label for="id">
+    const tag = el.tagName;
+    // Links and buttons: use text content
+    if (tag === 'A' || tag === 'BUTTON') {
+      const text = el.textContent?.trim();
+      if (text && text.length < 200) return text;
+    }
+    // Images: alt text
+    if (tag === 'IMG') return el.alt || el.title || '';
+    // Headings: text content
+    if (/^H[1-6]$/.test(tag)) return el.textContent?.trim() || '';
+    // ARIA label
+    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    // Form elements: explicit <label>
     if (el.id) {
       const lab = document.querySelector(`label[for="${el.id}"]`);
       if (lab) return lab.textContent.trim();
     }
-    // 2. Ancestor <label>
     const ancestor = el.closest('label');
     if (ancestor) return ancestor.textContent.trim();
-    // 3. Previous sibling or parent text
+    // Walk up for preceding text
     let prev = el.parentElement;
     while (prev) {
       const text = prev.previousElementSibling?.textContent?.trim();
@@ -36,87 +48,138 @@ SCAN_JS = r"""
       prev = prev.parentElement;
       if (prev?.tagName === 'FORM' || prev?.tagName === 'BODY') break;
     }
-    // 4. Placeholder or aria-label
-    return el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+    return el.getAttribute('placeholder') || el.title || '';
   };
 
-  const roleMap = {
-    'SELECT': 'combobox',
-    'TEXTAREA': 'textbox',
-    'BUTTON': 'button',
-  };
-  const inputTypeRole = {
-    'checkbox': 'checkbox',
-    'radio': 'radio',
-    'submit': 'button',
-    'file': 'file-input',
+  const getRole = (el) => {
+    const tag = el.tagName;
+    const type = el.type || '';
+    const ariaRole = el.getAttribute('role');
+    if (ariaRole) return ariaRole;
+    if (tag === 'A') return 'link';
+    if (tag === 'BUTTON') return 'button';
+    if (tag === 'SELECT') return 'combobox';
+    if (tag === 'TEXTAREA') return 'textbox';
+    if (tag === 'IMG') return 'image';
+    if (/^H[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'NAV') return 'navigation';
+    if (tag === 'INPUT') {
+      const map = {checkbox:'checkbox', radio:'radio', submit:'button', file:'file-input'};
+      return map[type] || 'textbox';
+    }
+    return tag.toLowerCase();
   };
 
-  const els = document.querySelectorAll('input,select,textarea,button,[role="button"]');
+  const getRef = (el, idx) => {
+    // Stable ref: name > id > href-based > fallback
+    if (el.name) return el.name;
+    if (el.id) return el.id;
+    if (el.tagName === 'A' && el.href) {
+      try {
+        const u = new URL(el.href);
+        const path = u.pathname.replace(/\/+$/, '').split('/').pop();
+        if (path && path.length < 50) return path;
+      } catch {}
+    }
+    return `_idx${idx}`;
+  };
+
+  // Selector for all interesting elements
+  const selector = formsOnly
+    ? 'input,select,textarea,button,[role="button"]'
+    : 'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],img[alt],h1,h2,h3,h4,h5,h6,nav,[role="navigation"],details,summary';
+
+  const els = document.querySelectorAll(selector);
   const results = [];
   let idx = 0;
 
+  const hlColors = {
+    link: '#2563eb',
+    button: '#dc2626',
+    textbox: '#0891b2',
+    combobox: '#7c3aed',
+    checkbox: '#16a34a',
+    radio: '#16a34a',
+    image: '#ea580c',
+    heading: '#6b7280',
+    navigation: '#6b7280',
+    'file-input': '#ea580c',
+    tab: '#7c3aed',
+    menuitem: '#7c3aed',
+  };
+
   els.forEach((el) => {
-    // Skip hidden elements
-    if (el.offsetParent === null && el.type !== 'hidden') return;
+    // Skip hidden
+    if (el.offsetParent === null && el.type !== 'hidden' && el.tagName !== 'NAV') return;
     if (el.type === 'hidden') return;
+    // Skip tiny/invisible
+    const rect = el.getBoundingClientRect();
+    if (el.tagName !== 'NAV' && rect.width === 0 && rect.height === 0) return;
 
-    const tag = el.tagName;
-    let role = roleMap[tag] || 'textbox';
-    if (tag === 'INPUT') {
-      role = inputTypeRole[el.type] || 'textbox';
-    }
-
-    const ref = el.name || el.id || `_idx${idx}`;
+    const role = getRole(el);
+    const ref = getRef(el, idx);
     const label = getLabel(el);
 
-    const entry = { role, ref, label };
+    // Skip links/images with no label
+    if ((role === 'link' || role === 'image') && !label) return;
+    // Skip duplicate labels for same role (common in navs)
 
-    // Value
-    if (tag === 'SELECT') {
+    const entry = { role, ref };
+    if (label) entry.label = label;
+
+    // Form-specific attributes
+    if (el.tagName === 'SELECT') {
       entry.value = el.options[el.selectedIndex]?.text || '';
       entry.options = Array.from(el.options).map(o => o.text);
     } else if (el.type === 'checkbox' || el.type === 'radio') {
       if (el.checked) entry.checked = true;
-    } else if (tag === 'BUTTON' || el.type === 'submit') {
-      entry.value = el.textContent?.trim() || el.value || '';
-    } else {
+    } else if (el.tagName === 'BUTTON' || el.type === 'submit') {
+      const v = el.textContent?.trim() || el.value || '';
+      if (v) entry.value = v;
+    } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       if (el.value) entry.value = el.value;
     }
 
-    // Attributes
+    // Link href
+    if (el.tagName === 'A' && el.href) {
+      entry.url = el.href;
+    }
+
+    // Heading level
+    if (/^H[1-6]$/.test(el.tagName)) {
+      entry.level = parseInt(el.tagName[1]);
+    }
+
     if (el.required) entry.required = true;
     if (el.disabled) entry.disabled = true;
-    if (!el.validity?.valid && el.value !== '') entry.invalid = true;
+    if (el.validity && !el.validity.valid && el.value !== '') entry.invalid = true;
 
-    // Highlight overlay
-    if (highlight) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        const overlay = document.createElement('div');
-        overlay.setAttribute('data-bu-highlight', '1');
-        overlay.style.cssText = `
-          position:absolute; z-index:99999; pointer-events:none;
-          border:2px solid #e63946; background:rgba(230,57,70,0.08);
-          border-radius:3px;
-          left:${rect.left + window.scrollX - 1}px;
-          top:${rect.top + window.scrollY - 1}px;
-          width:${rect.width + 2}px;
-          height:${rect.height + 2}px;
-        `;
-        const badge = document.createElement('span');
-        badge.setAttribute('data-bu-highlight', '1');
-        badge.textContent = ref;
-        badge.style.cssText = `
-          position:absolute; z-index:100000; pointer-events:none;
-          background:#e63946; color:white; font:bold 10px monospace;
-          padding:1px 4px; border-radius:2px; white-space:nowrap;
-          left:${rect.left + window.scrollX}px;
-          top:${Math.max(0, rect.top + window.scrollY - 16)}px;
-        `;
-        document.body.appendChild(overlay);
-        document.body.appendChild(badge);
-      }
+    // Highlight
+    if (highlight && rect.width > 0 && rect.height > 0) {
+      const color = hlColors[role] || '#6b7280';
+      const overlay = document.createElement('div');
+      overlay.setAttribute('data-bu-highlight', '1');
+      overlay.style.cssText = `
+        position:absolute; z-index:99998; pointer-events:none;
+        border:2px solid ${color}; background:${color}11;
+        border-radius:3px;
+        left:${rect.left + window.scrollX - 1}px;
+        top:${rect.top + window.scrollY - 1}px;
+        width:${rect.width + 2}px;
+        height:${rect.height + 2}px;
+      `;
+      const badge = document.createElement('span');
+      badge.setAttribute('data-bu-highlight', '1');
+      badge.textContent = ref;
+      badge.style.cssText = `
+        position:absolute; z-index:99999; pointer-events:none;
+        background:${color}; color:white; font:bold 10px monospace;
+        padding:1px 4px; border-radius:2px; white-space:nowrap;
+        left:${rect.left + window.scrollX}px;
+        top:${Math.max(0, rect.top + window.scrollY - 16)}px;
+      `;
+      document.body.appendChild(overlay);
+      document.body.appendChild(badge);
     }
 
     results.push(entry);
@@ -128,8 +191,10 @@ SCAN_JS = r"""
     title: document.title,
     elements: results,
   });
-})(%HIGHLIGHT%)
+})(%HIGHLIGHT%, %FORMS_ONLY%)
 """
+
+FORM_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}
 
 
 def format_element(el: dict) -> str:
@@ -140,9 +205,14 @@ def format_element(el: dict) -> str:
 
     parts = [f'  - {role}']
     if label:
+        # Truncate very long labels
+        if len(label) > 80:
+            label = label[:77] + "..."
         parts.append(f' "{label}"')
     parts.append(f' [{ref}]')
 
+    if el.get("level"):
+        parts.append(f' [h{el["level"]}]')
     if el.get("required"):
         parts.append(" [required]")
     if el.get("invalid"):
@@ -152,25 +222,31 @@ def format_element(el: dict) -> str:
     if el.get("disabled"):
         parts.append(" [disabled]")
     if el.get("value"):
-        parts.append(f' [value="{el["value"]}"]')
+        val = el["value"]
+        if len(val) > 60:
+            val = val[:57] + "..."
+        parts.append(f' [value="{val}"]')
+    if el.get("url"):
+        parts.append(f'\n      /url: {el["url"]}')
 
     return "".join(parts)
 
 
 def main():
-    interactive_only = False
+    forms_only = False
     highlight = False
     extra_args = []
     for arg in sys.argv[1:]:
-        if arg in ("--interactive", "-i"):
-            interactive_only = True
+        if arg in ("--forms", "-f"):
+            forms_only = True
         elif arg in ("--highlight", "-h"):
             highlight = True
         else:
             extra_args.append(arg)
 
-    # Build JS with highlight flag
+    # Build JS with flags
     js = SCAN_JS.replace("%HIGHLIGHT%", "true" if highlight else "false")
+    js = js.replace("%FORMS_ONLY%", "true" if forms_only else "false")
 
     # Run single JS eval — scans full DOM, no viewport limits
     cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js]
@@ -188,9 +264,6 @@ def main():
 
     page = json.loads(result_str)
     elements = page.get("elements", [])
-
-    # Filter if interactive only (skip links — though we don't collect them via this JS)
-    # All elements from this scan are interactive by nature
 
     # Detect CDP port
     cdp_port = ""
@@ -211,8 +284,6 @@ def main():
     lines.append("")
 
     for el in elements:
-        if interactive_only and el["role"] not in {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}:
-            continue
         lines.append(format_element(el))
         if el.get("options"):
             for opt in el["options"]:

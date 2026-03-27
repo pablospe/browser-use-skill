@@ -31,8 +31,8 @@ The fastest way to discover and fill forms:
 bu --headed open https://example.com/form
 
 # 2. Snapshot — full-DOM scan, stable name-based refs, saved to file
-bu snapshot --interactive              # form elements only
-bu snapshot --interactive --highlight  # + red overlays on page
+bu snapshot --forms              # form elements only
+bu snapshot --forms --highlight  # + red overlays on page
 
 # 3. Read snapshot (small enough to read directly, no grep needed)
 # Output:
@@ -44,7 +44,7 @@ bu snapshot --interactive --highlight  # + red overlays on page
 bu fill '{"your-surname":"Smith","salutation":{"select":"Mrs."},"acceptance":{"check":true}}'
 
 # 5. Verify
-bu snapshot --interactive
+bu snapshot --forms
 ```
 
 **Total: 2 shell calls** to discover + fill a form (vs 16+ with individual commands).
@@ -76,7 +76,7 @@ bu close-tab [tab]               # Close tab (current if no index)
 # Page State
 bu state                         # URL, title, clickable elements with indices (inline, viewport only)
 bu snapshot                      # Full-DOM structured YAML saved to .browser-use/*.yml
-bu snapshot --interactive        # Form elements only (textbox, combobox, checkbox, button)
+bu snapshot --forms        # Form elements only (textbox, combobox, checkbox, button)
 bu snapshot --highlight          # Inject red overlay badges on interactive elements
 bu snapshot -i --highlight       # Both: form-only + highlights
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
@@ -145,7 +145,7 @@ Scans the **full DOM** via a single JS eval — no viewport limits, no missing e
 
 ```bash
 bu snapshot                      # All elements (links, forms, buttons)
-bu snapshot --interactive        # Form elements only (recommended for forms)
+bu snapshot --forms        # Form elements only (recommended for forms)
 bu snapshot --highlight          # Add red overlays + name badges on page
 bu snapshot -i --highlight       # Both
 ```
@@ -188,7 +188,7 @@ With `--highlight`, red bordered overlays and name badges are injected on the pa
 
 ### Grepping (optional)
 
-With `--interactive`, the output is typically small enough to read directly. For full snapshots on complex pages, grep for interactive elements:
+With `--forms`, the output is typically small enough to read directly. For full snapshots on complex pages, grep for interactive elements:
 
 ```bash
 grep -E 'textbox|combobox|checkbox|button' .browser-use/page-*.yml
@@ -293,7 +293,7 @@ bu open https://abc.trycloudflare.com
 
 ## Tips
 
-1. **Prefer `snapshot -i` over `state`** for forms — full DOM, stable refs, values shown
+1. **Prefer `snapshot` over `state`** — full DOM, stable refs, values shown. Add `--forms` for form-only view
 2. **Use `fill` instead of individual `input`/`select` commands** — single eval, no ref instability
 3. **Use `--highlight` for debugging** — see which elements the snapshot found
 4. **Use `--headed` for debugging** to see what the browser is doing
