@@ -22,8 +22,40 @@ FILL_JS = r"""
 ((fields) => {
   let filled = 0;
   const errors = [];
+
+  // Find element by name, searching main document, same-origin iframes, and shadow DOM
+  const findEl = (name) => {
+    // Search a root (document or shadowRoot) and its shadow children
+    const searchRoot = (root) => {
+      const el = root.querySelector(`[name="${name}"]`);
+      if (el) return el;
+      // Check shadow DOMs
+      const allEls = root.querySelectorAll('*');
+      for (const candidate of allEls) {
+        if (candidate.shadowRoot) {
+          const found = searchRoot(candidate.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    // Main document
+    let el = searchRoot(document);
+    if (el) return el;
+    // Same-origin iframes
+    const iframes = document.querySelectorAll('iframe');
+    for (const iframe of iframes) {
+      let iframeDoc;
+      try { iframeDoc = iframe.contentDocument; } catch(e) { continue; }
+      if (!iframeDoc) continue;
+      el = searchRoot(iframeDoc);
+      if (el) return el;
+    }
+    return null;
+  };
+
   for (const [name, action] of Object.entries(fields)) {
-    const el = document.querySelector(`[name="${name}"]`);
+    const el = findEl(name);
     if (!el) { errors.push(name + ': not found'); continue; }
 
     try {

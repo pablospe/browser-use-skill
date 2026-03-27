@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Full-DOM snapshot via JS eval — no viewport limits, stable refs, optional highlighting."""
+"""Full-DOM snapshot via JS eval — no viewport limits, stable refs, optional highlighting.
+
+--aria mode uses Chrome's native Accessibility API via CDP (Accessibility.getFullAXTree)
+instead of DOM walking, giving the same rich accessibility tree that devtools exposes.
+"""
 
 import json
 import re
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -89,7 +94,6 @@ SCAN_JS = r"""
     ? 'input,select,textarea,button,[role="button"]'
     : 'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],img[alt],h1,h2,h3,h4,h5,h6,nav,[role="navigation"],details,summary';
 
-  const els = document.querySelectorAll(selector);
   const results = [];
   const hlPairs = [];
   let idx = 0;
@@ -109,7 +113,8 @@ SCAN_JS = r"""
     menuitem: '#7c3aed',
   };
 
-  els.forEach((el) => {
+  // Process a single element, optionally tagged with a frame descriptor
+  const processEl = (el, frameDesc) => {
     // Skip hidden
     if (el.offsetParent === null && el.type !== 'hidden' && el.tagName !== 'NAV') return;
     if (el.type === 'hidden') return;
@@ -123,10 +128,10 @@ SCAN_JS = r"""
 
     // Skip links/images with no label
     if ((role === 'link' || role === 'image') && !label) return;
-    // Skip duplicate labels for same role (common in navs)
 
     const entry = { role, ref };
     if (label) entry.label = label;
+    if (frameDesc) entry.frame = frameDesc;
 
     // Form-specific attributes
     if (el.tagName === 'SELECT') {
@@ -164,6 +169,36 @@ SCAN_JS = r"""
 
     results.push(entry);
     idx++;
+  };
+
+  // Scan a root (document or shadowRoot) for matching elements, including shadow DOM
+  const scanRoot = (root, frameDesc) => {
+    const els = root.querySelectorAll(selector);
+    els.forEach(el => processEl(el, frameDesc));
+    // Recurse into Shadow DOM: find all elements with a shadowRoot
+    root.querySelectorAll('*').forEach(el => {
+      if (el.shadowRoot) {
+        scanRoot(el.shadowRoot, frameDesc);
+      }
+    });
+  };
+
+  // Scan main document
+  scanRoot(document, null);
+
+  // Scan same-origin iframes
+  document.querySelectorAll('iframe').forEach(iframe => {
+    let iframeDoc;
+    try { iframeDoc = iframe.contentDocument; } catch(e) { /* cross-origin */ }
+    if (!iframeDoc) {
+      // Record cross-origin iframe as a comment marker
+      const id = iframe.id ? '#' + iframe.id : (iframe.name ? '[name=' + iframe.name + ']' : '');
+      results.push({ role: 'iframe-boundary', ref: 'iframe' + id, label: '(cross-origin, not accessible)', num: idx++ });
+      return;
+    }
+    const id = iframe.id ? '#' + iframe.id : (iframe.name ? '[name=' + iframe.name + ']' : '');
+    const frameDesc = 'iframe' + id;
+    scanRoot(iframeDoc, frameDesc);
   });
 
   // Highlight system with repositioning + selection
@@ -313,15 +348,41 @@ TREE_JS = r"""
   const results = [];
   const hlPairs = [];
   let idx = 0;
+  const structural = new Set(['navigation','form','section','article','main','header','footer','details','list','listitem','table','region','dialog']);
 
-  function walk(node, depth) {
-    for (const child of node.children) {
+  function walk(node, depth, frameDesc) {
+    const children = node.children || [];
+    for (const child of children) {
       const tag = child.tagName;
-      const ariaRole = child.getAttribute('role');
+
+      // Handle iframes: try to walk into same-origin contentDocument
+      if (tag === 'IFRAME') {
+        let iframeDoc;
+        try { iframeDoc = child.contentDocument; } catch(e) { /* cross-origin */ }
+        const id = child.id ? '#' + child.id : (child.name ? '[name=' + child.name + ']' : '');
+        if (iframeDoc && iframeDoc.body) {
+          const iframeFrame = 'iframe' + id;
+          results.push({ role: 'iframe-boundary', ref: iframeFrame, depth, label: '', num: idx++ });
+          walk(iframeDoc.body, depth + 1, iframeFrame);
+        } else {
+          results.push({ role: 'iframe-boundary', ref: 'iframe' + id, depth, label: '(cross-origin, not accessible)', num: idx++ });
+        }
+        continue;
+      }
+
+      // Walk into Shadow DOM if present
+      if (child.shadowRoot) {
+        const shadowLabel = tag.toLowerCase() + (child.id ? '#' + child.id : '');
+        results.push({ role: 'shadow-root', ref: shadowLabel, depth, label: '', num: idx++ });
+        walk(child.shadowRoot, depth + 1, frameDesc);
+        // Also continue walking the light DOM children below
+      }
+
+      const ariaRole = child.getAttribute ? child.getAttribute('role') : null;
       const isInteresting = INTERESTING.has(tag) || (ariaRole && ARIA_ROLES.has(ariaRole));
 
       if (!isInteresting) {
-        walk(child, depth);
+        walk(child, depth, frameDesc);
         continue;
       }
 
@@ -332,19 +393,20 @@ TREE_JS = r"""
       if (child.type === 'hidden') { continue; }
 
       const role = getRole(child);
-      if (!role) { walk(child, depth); continue; }
+      if (!role) { walk(child, depth, frameDesc); continue; }
 
       const ref = getRef(child, idx);
       const label = getLabel(child);
 
       // Skip links/images with no label
       if ((role === 'link' || role === 'image') && !label) {
-        walk(child, depth);
+        walk(child, depth, frameDesc);
         continue;
       }
 
       const entry = { role, ref, depth };
       if (label) entry.label = label;
+      if (frameDesc) entry.frame = frameDesc;
 
       if (tag === 'SELECT') {
         entry.value = child.options[child.selectedIndex]?.text || '';
@@ -377,15 +439,14 @@ TREE_JS = r"""
       idx++;
 
       // Recurse into structural elements (nav, form, section, etc.)
-      const structural = new Set(['navigation','form','section','article','main','header','footer','details','list','listitem','table','region','dialog']);
       if (structural.has(role)) {
-        walk(child, depth + 1);
+        walk(child, depth + 1, frameDesc);
       }
       // Don't recurse into leaf elements (links, buttons, inputs)
     }
   }
 
-  walk(document.body, 0);
+  walk(document.body, 0, null);
 
   // Highlight system with repositioning + selection
   if (highlight && hlPairs.length > 0) {
@@ -449,6 +510,251 @@ TREE_JS = r"""
 
 FORM_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}
 
+# --- ARIA / CDP helpers ---
+
+# Roles to skip entirely (internal Chrome scaffolding, not useful for agents)
+_SKIP_ROLES = {
+    "none", "generic", "InlineTextBox", "LineBreak",
+}
+
+# Structural roles that act as containers — rendered as tree nesting
+_STRUCTURAL_ROLES = {
+    "RootWebArea", "navigation", "main", "banner", "contentinfo",
+    "complementary", "region", "form", "search", "dialog", "alert",
+    "alertdialog", "application", "group", "list", "listitem", "tree",
+    "treeitem", "tablist", "tabpanel", "toolbar", "menu", "menubar",
+    "grid", "row", "rowgroup", "table", "article", "section", "figure",
+    "directory", "feed", "log", "marquee", "status", "timer",
+    "math", "note", "document", "cell", "columnheader", "rowheader",
+    "definition", "term", "paragraph", "blockquote", "details",
+}
+
+
+def _detect_cdp_port() -> str | None:
+    """Detect the Chrome remote-debugging-port from the process list."""
+    try:
+        ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+        m = re.search(r"remote-debugging-port=(\d+)", ps.stdout)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _cdp_send(ws_url: str, method: str, params: dict | None = None) -> dict:
+    """Send a single CDP command over WebSocket and return the result."""
+    import websocket  # websocket-client
+
+    ws = websocket.create_connection(ws_url, timeout=10)
+    try:
+        msg = {"id": 1, "method": method, "params": params or {}}
+        ws.send(json.dumps(msg))
+        while True:
+            resp = json.loads(ws.recv())
+            if resp.get("id") == 1:
+                if "error" in resp:
+                    raise RuntimeError(f"CDP error: {resp['error']}")
+                return resp.get("result", {})
+    finally:
+        ws.close()
+
+
+def _get_debugger_ws_url(cdp_port: str) -> str:
+    """Get the page's WebSocket debugger URL from CDP /json endpoint."""
+    url = f"http://localhost:{cdp_port}/json"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        targets = json.loads(resp.read())
+    # Pick the first 'page' target
+    for t in targets:
+        if t.get("type") == "page":
+            return t["webSocketDebuggerUrl"]
+    # Fallback: first target with a WS URL
+    for t in targets:
+        if "webSocketDebuggerUrl" in t:
+            return t["webSocketDebuggerUrl"]
+    raise RuntimeError(f"No debuggable page target found on CDP port {cdp_port}")
+
+
+def _get_page_info_via_cdp(ws_url: str) -> tuple[str, str]:
+    """Return (url, title) of the current page via CDP Runtime.evaluate."""
+    result = _cdp_send(ws_url, "Runtime.evaluate", {
+        "expression": "JSON.stringify({url: location.href, title: document.title})",
+        "returnByValue": True,
+    })
+    val = result.get("result", {}).get("value", "{}")
+    info = json.loads(val)
+    return info.get("url", ""), info.get("title", "")
+
+
+def _ax_prop(node: dict, name: str) -> str:
+    """Extract a named property value from an AX node's properties list."""
+    for p in node.get("properties", []):
+        if p.get("name") == name:
+            v = p.get("value", {})
+            return str(v.get("value", ""))
+    return ""
+
+
+def _format_aria_tree(nodes: list[dict]) -> list[str]:
+    """Build a YAML-like tree from Accessibility.getFullAXTree nodes."""
+    if not nodes:
+        return []
+
+    # Build lookup: nodeId -> node
+    by_id = {}
+    for n in nodes:
+        by_id[n["nodeId"]] = n
+
+    # Build children map from parentId
+    children: dict[str, list[str]] = {}
+    root_id = None
+    for n in nodes:
+        nid = n["nodeId"]
+        pid = n.get("parentId")
+        if pid:
+            children.setdefault(pid, []).append(nid)
+        else:
+            root_id = nid
+
+    if root_id is None and nodes:
+        root_id = nodes[0]["nodeId"]
+
+    lines: list[str] = []
+    counter = [0]  # mutable counter for numbering interactive elements
+
+    def _node_name(node: dict) -> str:
+        nm = node.get("name", {})
+        return str(nm.get("value", "")) if isinstance(nm, dict) else str(nm)
+
+    def _node_role(node: dict) -> str:
+        role = node.get("role", {})
+        return str(role.get("value", "")) if isinstance(role, dict) else str(role)
+
+    def _is_interactive(role: str) -> bool:
+        return role in {
+            "link", "button", "textbox", "combobox", "checkbox", "radio",
+            "menuitem", "menuitemcheckbox", "menuitemradio", "tab",
+            "switch", "slider", "spinbutton", "searchbox", "option",
+            "treeitem",
+        }
+
+    def walk(nid: str, depth: int) -> None:
+        node = by_id.get(nid)
+        if node is None:
+            return
+
+        role = _node_role(node)
+        name = _node_name(node)
+        ignored = node.get("ignored", False)
+
+        # Skip ignored nodes but still walk children
+        if ignored or role in _SKIP_ROLES:
+            for cid in children.get(nid, []):
+                walk(cid, depth)
+            return
+
+        indent = "  " * (depth + 1)
+        interactive = _is_interactive(role)
+
+        # Build the display line
+        parts = [f"{indent}- {role}"]
+        if name:
+            display_name = name[:77] + "..." if len(name) > 80 else name
+            parts.append(f' "{display_name}"')
+
+        # Number interactive elements for ref compatibility
+        if interactive:
+            num = counter[0]
+            counter[0] += 1
+            parts.append(f" #{num}")
+
+        # Extra properties: value
+        value = _ax_prop(node, "value")
+        if not value:
+            v = node.get("value")
+            if isinstance(v, dict):
+                value = str(v.get("value", ""))
+        if value:
+            display_val = value[:57] + "..." if len(value) > 60 else value
+            parts.append(f' [value="{display_val}"]')
+
+        checked = _ax_prop(node, "checked")
+        if checked == "true":
+            parts.append(" [checked]")
+        elif checked == "mixed":
+            parts.append(" [mixed]")
+
+        disabled = _ax_prop(node, "disabled")
+        if disabled == "true":
+            parts.append(" [disabled]")
+
+        required = _ax_prop(node, "required")
+        if required == "true":
+            parts.append(" [required]")
+
+        expanded = _ax_prop(node, "expanded")
+        if expanded == "true":
+            parts.append(" [expanded]")
+        elif expanded == "false":
+            parts.append(" [collapsed]")
+
+        selected = _ax_prop(node, "selected")
+        if selected == "true":
+            parts.append(" [selected]")
+
+        level = _ax_prop(node, "level")
+        if level and role == "heading":
+            parts.append(f" [h{level}]")
+
+        focused = _ax_prop(node, "focused")
+        if focused == "true":
+            parts.append(" [focused]")
+
+        line = "".join(parts)
+        lines.append(line)
+
+        # Recurse into children
+        for cid in children.get(nid, []):
+            walk(cid, depth + 1 if role in _STRUCTURAL_ROLES else depth)
+
+    walk(root_id, 0)
+    return lines
+
+
+def run_aria_snapshot(cdp_port: str) -> None:
+    """Fetch the accessibility tree via CDP and save as YAML snapshot."""
+    ws_url = _get_debugger_ws_url(cdp_port)
+
+    # Get page URL and title
+    page_url, page_title = _get_page_info_via_cdp(ws_url)
+
+    # Fetch the full accessibility tree
+    result = _cdp_send(ws_url, "Accessibility.getFullAXTree")
+    ax_nodes = result.get("nodes", [])
+
+    tree_lines = _format_aria_tree(ax_nodes)
+
+    # Build output
+    lines = []
+    lines.append(f"# url: {page_url}")
+    lines.append(f"# cdp: localhost:{cdp_port}")
+    lines.append(f"# title: {page_title}")
+    lines.append("# mode: aria (CDP Accessibility.getFullAXTree)")
+    lines.append("")
+    lines.extend(tree_lines)
+
+    content = "\n".join(lines) + "\n"
+
+    # Save to file
+    SNAPSHOT_DIR.mkdir(exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%f")[:-3] + "Z"
+    filename = f"page-{ts}.yml"
+    filepath = SNAPSHOT_DIR / filename
+    filepath.write_text(content)
+
+    print(f"[Snapshot]({filepath.relative_to(Path.cwd()) if filepath.is_relative_to(Path.cwd()) else filepath})")
+
 
 def format_element(el: dict) -> str:
     """Format one element as a YAML-like line."""
@@ -457,6 +763,15 @@ def format_element(el: dict) -> str:
     label = el.get("label", "")
     depth = el.get("depth", 0)
     indent = "  " * (depth + 1)
+
+    # Special boundary markers for iframes and shadow DOM
+    if role == "iframe-boundary":
+        if label:
+            # Cross-origin iframe
+            return f"{indent}- # iframe {ref} {label}"
+        return f"{indent}- [iframe: {ref}]"
+    if role == "shadow-root":
+        return f"{indent}- [shadow-root: {ref}]"
 
     num = el.get("num", "")
     parts = [f'{indent}- {role}']
@@ -468,6 +783,8 @@ def format_element(el: dict) -> str:
     parts.append(f' #{num}' if num != "" else '')
     parts.append(f' [{ref}]')
 
+    if el.get("frame"):
+        parts.append(f' [frame={el["frame"]}]')
     if el.get("level"):
         parts.append(f' [h{el["level"]}]')
     if el.get("required"):
@@ -494,16 +811,40 @@ def main():
     forms_only = False
     highlight = False
     tree_mode = False
+    aria_mode = False
+    cdp_port_override = None
     extra_args = []
-    for arg in sys.argv[1:]:
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg in ("--forms", "-f"):
             forms_only = True
         elif arg in ("--highlight", "-h"):
             highlight = True
         elif arg in ("--tree", "-t"):
             tree_mode = True
+        elif arg in ("--aria", "-a"):
+            aria_mode = True
+        elif arg == "--cdp-port" and i + 1 < len(argv):
+            i += 1
+            cdp_port_override = argv[i]
+        elif arg.startswith("--cdp-port="):
+            cdp_port_override = arg.split("=", 1)[1]
         else:
             extra_args.append(arg)
+        i += 1
+
+    # ARIA mode: use CDP Accessibility.getFullAXTree instead of DOM walking
+    if aria_mode:
+        port = cdp_port_override or _detect_cdp_port()
+        if not port:
+            print("ERROR: Could not detect CDP port. Is Chrome running with "
+                  "--remote-debugging-port? Use --cdp-port=PORT to specify.",
+                  file=sys.stderr)
+            sys.exit(1)
+        run_aria_snapshot(port)
+        return
 
     # Choose JS scan: tree (nested) or flat
     if tree_mode:
