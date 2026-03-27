@@ -32,13 +32,13 @@ bu --headed open https://example.com/form
 
 # 2. Snapshot — full-DOM scan, stable name-based refs, saved to file
 bu snapshot --forms              # form elements only
-bu snapshot --forms --highlight  # + red overlays on page
+bu snapshot --forms --highlight  # + color-coded overlays with numbered badges
 
 # 3. Read snapshot (small enough to read directly, no grep needed)
 # Output:
-#   - textbox "Surname *" [your-surname] [required]
-#   - combobox "Salutation" [salutation] [value="Mr."]
-#   - checkbox "Consent" [acceptance] [checked]
+#   - combobox "Salutation" #0 [salutation] [value="Mr."]
+#   - textbox "Surname *" #1 [your-surname] [required]
+#   - checkbox "Consent" #2 [acceptance] [checked]
 
 # 4. Batch fill — single JS eval, all fields at once
 bu fill '{"your-surname":"Smith","salutation":{"select":"Mrs."},"acceptance":{"check":true}}'
@@ -48,6 +48,19 @@ bu snapshot --forms
 ```
 
 **Total: 2 shell calls** to discover + fill a form (vs 16+ with individual commands).
+
+### User selection workflow
+
+With `--highlight`, the user can click badges in the browser to select elements:
+
+```bash
+bu snapshot --forms --highlight  # badges appear on page
+# User clicks badges to select elements (turns gold with checkmark)
+bu selected                      # returns selected elements as JSON
+# result: [{"num":1,"ref":"your-surname"},{"num":3,"ref":"address"}]
+```
+
+This enables conversations like "fix the selected elements" or "element #3 has the wrong value".
 
 ## Browser Modes
 
@@ -76,10 +89,16 @@ bu close-tab [tab]               # Close tab (current if no index)
 # Page State
 bu state                         # URL, title, clickable elements with indices (inline, viewport only)
 bu snapshot                      # Full-DOM structured YAML saved to .browser-use/*.yml
-bu snapshot --forms        # Form elements only (textbox, combobox, checkbox, button)
-bu snapshot --highlight          # Inject red overlay badges on interactive elements
-bu snapshot -i --highlight       # Both: form-only + highlights
+bu snapshot --forms              # Form elements only (textbox, combobox, checkbox, button)
+bu snapshot --highlight          # Color-coded overlays with numbered clickable badges
+bu snapshot --forms --highlight  # Form-only + highlights
+bu snapshot --tree               # Nested DOM hierarchy (shows parent-child structure)
+bu snapshot --tree --highlight   # Tree mode + highlights
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
+
+# Highlight Interaction
+bu selected                      # Read user-selected elements (click badges to select)
+bu clear-highlights              # Remove all highlight overlays from page
 
 # Form Fill — single JS eval, uses name-based refs from snapshot
 bu fill '<json>'                 # Batch fill (see Batch Fill section below)
@@ -144,11 +163,15 @@ The Python `browser` object provides: `browser.url`, `browser.title`, `browser.h
 Scans the **full DOM** via a single JS eval — no viewport limits, no missing elements.
 
 ```bash
-bu snapshot                      # All elements (links, forms, buttons)
-bu snapshot --forms        # Form elements only (recommended for forms)
-bu snapshot --highlight          # Add red overlays + name badges on page
-bu snapshot -i --highlight       # Both
+bu snapshot                      # All elements (links, forms, buttons, headings, nav)
+bu snapshot --forms              # Form elements only (recommended for forms)
+bu snapshot --highlight          # Color-coded overlays with numbered clickable badges
+bu snapshot --forms --highlight  # Both
+bu snapshot --tree               # Nested DOM hierarchy (parent-child structure)
+bu snapshot --tree --highlight   # Tree + highlights
 ```
+
+Flags: `--forms` / `-f`, `--highlight` / `-h`, `--tree` / `-t`.
 
 ### Output format
 
@@ -157,14 +180,18 @@ bu snapshot -i --highlight       # Both
 # cdp: localhost:33339
 # title: My Form Page
 
-  - combobox "Salutation*" [your-salutation] [value="Mr."]
+  - combobox "Salutation*" #0 [your-salutation] [value="Mr."]
       - option "Mr."
       - option "Mrs."
-  - textbox "Surname *" [your-surname] [required] [value="Smith"]
-  - textbox "Email *" [your-email] [required]
-  - checkbox "Consent" [acceptance-1] [checked]
-  - button [_idx15] [value="Submit"]
+  - textbox "Surname *" #1 [your-surname] [required] [value="Smith"]
+  - textbox "Email *" #2 [your-email] [required]
+  - checkbox "Consent" #3 [acceptance-1] [checked]
+  - button #4 [_idx15] [value="Submit"]
 ```
+
+### Element numbering
+
+Each element gets a sequential `#N` in the YAML output and on visual badges (`0:your-salutation`). Use `#N` as a quick conversation handle ("element #3 is wrong") while name-based refs (`[your-surname]`) remain the stable key for `bu fill`.
 
 ### Key features
 
@@ -172,11 +199,14 @@ bu snapshot -i --highlight       # Both
 |---|---|---|
 | DOM coverage | Viewport only | **Full DOM** |
 | Refs | Numeric, change each call | **name attribute, stable** |
+| Numbering | Indices only | **#N in YAML + visual badges** |
 | Labels | Inline text | **Attached to elements** |
 | Current values | Not shown | **`[value="..."]` on each field** |
-| Highlights | None | **Red overlays with `--highlight`** |
+| Highlights | None | **Color-coded overlays with `--highlight`** |
+| Selection | None | **Click badges to select, `bu selected` to read** |
 | Output | Inline (eats tokens) | **Saved to `.browser-use/*.yml`** |
 | CDP port | Not shown | **`# cdp: localhost:PORT`** |
+| Structure | Flat list | **Nested tree with `--tree`** |
 
 ### Refs
 
@@ -184,7 +214,38 @@ Snapshot uses the element's `name` attribute as the ref (e.g. `[your-surname]`, 
 
 ### Highlighting
 
-With `--highlight`, red bordered overlays and name badges are injected on the page. Useful for debugging or visual confirmation. Highlights are removed on next snapshot call.
+With `--highlight`, color-coded bordered overlays and numbered badges are injected on the page:
+- **Color by role**: blue (links), red (buttons), cyan (textboxes), purple (dropdowns), green (checkboxes)
+- **Numbered badges**: show `N:ref` (e.g. `3:your-surname`) for quick identification
+- **Clickable**: click a badge to select/deselect it (turns gold with checkmark)
+- **Resize-safe**: overlays reposition automatically when the window is resized
+- **Dismiss button**: red X button in the top-right corner removes all highlights
+- Highlights are also cleared on the next snapshot call
+
+### Selection
+
+Click badges to toggle selection. Selected elements get a gold border and checkmark prefix.
+
+```bash
+bu selected   # Returns JSON: [{"num":1,"ref":"your-surname"},{"num":3,"ref":"address"}]
+```
+
+Selections persist across snapshot calls (stored in `window.__buSelected`). Use `bu clear-highlights` to remove all overlays and reset.
+
+### Tree mode
+
+With `--tree`, the output shows nested DOM structure (parent-child relationships):
+
+```yaml
+  - navigation "Main-menu" #0 [_idx4]
+    - list "Skip to content" #1 [menu-main-menu]
+      - listitem "Toggle Navigation" #2 [menu-item-7024]
+        - link "Range of treatment" #3 [range-of-treatment]
+  - main "main" #10 [main]
+    - section "content" #11 [content]
+      - form "Contact form" #12 [_idx73]
+        - textbox "Surname *" #13 [your-surname] [value="Smith"]
+```
 
 ### Grepping (optional)
 
@@ -235,17 +296,27 @@ bu cloud v2 poll <task-id>       # Poll task until done
 
 ```bash
 bu --headed open https://example.com/form
-bu snapshot -i --highlight
+bu snapshot --forms --highlight
 # read .browser-use/page-*.yml
 bu fill '{"field1":"value1","field2":"value2","dropdown":{"select":"Option"}}'
-bu snapshot -i  # verify
+bu snapshot --forms  # verify
+```
+
+### Interactive Review with User
+
+```bash
+bu --headed open https://example.com/form
+bu snapshot --forms --highlight       # user sees numbered badges
+# user clicks badges to select problematic elements
+bu selected                           # AI reads which elements were selected
+# AI can now address specific elements by #N
 ```
 
 ### Authenticated Browsing (existing Chrome session)
 
 ```bash
 bu --connect open https://gmail.com   # Reuse logged-in Chrome via CDP
-bu --connect snapshot -i
+bu --connect snapshot --forms
 ```
 
 Requires Chrome launched with `--remote-debugging-port=9222`.
@@ -293,12 +364,15 @@ bu open https://abc.trycloudflare.com
 
 ## Tips
 
-1. **Prefer `snapshot` over `state`** — full DOM, stable refs, values shown. Add `--forms` for form-only view
+1. **Prefer `snapshot` over `state`** — full DOM, stable refs, values shown, numbered elements
 2. **Use `fill` instead of individual `input`/`select` commands** — single eval, no ref instability
-3. **Use `--highlight` for debugging** — see which elements the snapshot found
-4. **Use `--headed` for debugging** to see what the browser is doing
-5. **Sessions persist** — browser stays open between commands
-6. **`eval` with JS** is the most powerful extraction method for complex pages
+3. **Use `--highlight` for visual debugging** — color-coded overlays with clickable numbered badges
+4. **Use `--forms` for form pages** — filters to form elements only, keeps output small
+5. **Use `--tree` for structural context** — shows nested DOM hierarchy
+6. **Use `bu selected` for interactive workflows** — let users click to select elements
+7. **Use `--headed` for debugging** to see what the browser is doing
+8. **Sessions persist** — browser stays open between commands
+9. **`eval` with JS** is the most powerful extraction method for complex pages
 
 ## Troubleshooting
 
@@ -308,11 +382,13 @@ bu open https://abc.trycloudflare.com
 - **Ref changed between calls?** Use `snapshot` — refs are stable name attributes
 - **Unicode errors?** Already handled — `bu.sh` sets `PYTHONUTF8=1` automatically
 - **Highlights not showing?** Ensure `--headed` was used when opening the browser
+- **Highlights mispositioned?** They auto-reposition on resize; click X to dismiss and re-snapshot
 
 ## Cleanup
 
 ```bash
 bu close           # Close browser session
+bu clear-highlights  # Remove highlight overlays without closing
 bu tunnel stop --all  # Stop tunnels (if any)
 ```
 
@@ -320,7 +396,7 @@ bu tunnel stop --all  # Stop tunnels (if any)
 
 Recipes store DOM access patterns so repeated tasks skip visual discovery entirely.
 
-**First run**: discover selectors manually → write a recipe JSON
+**First run**: discover selectors manually -> write a recipe JSON
 **Repeat runs**: `bu recipe run <name>` executes JS directly — no screenshot, no element scanning
 
 ### Recipe JSON format
