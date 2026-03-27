@@ -166,22 +166,34 @@ SCAN_JS = r"""
     idx++;
   });
 
-  // Highlight system with repositioning
+  // Highlight system with repositioning + selection
   if (highlight && hlPairs.length > 0) {
+    if (!window.__buSelected) window.__buSelected = new Map();
+    const sel = window.__buSelected;
+
     const positionOverlays = () => {
       document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
       hlPairs.forEach(({ el, ref, num, color }) => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
+        const isSel = sel.has(num);
+        const borderColor = isSel ? '#f59e0b' : color;
+        const borderWidth = isSel ? '3px' : '2px';
         const ov = document.createElement('div');
         ov.setAttribute('data-bu-highlight', '1');
         ov.setAttribute('data-bu-hl-overlay', '1');
-        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
+        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:${borderWidth} solid ${borderColor};background:${borderColor}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
         const bd = document.createElement('span');
         bd.setAttribute('data-bu-highlight', '1');
         bd.setAttribute('data-bu-hl-overlay', '1');
-        bd.textContent = `${num}:${ref}`;
-        bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        bd.setAttribute('data-bu-badge-num', String(num));
+        bd.textContent = (isSel ? '\u2713 ' : '') + `${num}:${ref}`;
+        bd.style.cssText = `position:absolute;z-index:99999;cursor:pointer;background:${isSel ? '#f59e0b' : color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        bd.onclick = (e) => {
+          e.stopPropagation();
+          if (sel.has(num)) sel.delete(num); else sel.set(num, { num, ref });
+          positionOverlays();
+        };
         document.body.appendChild(ov);
         document.body.appendChild(bd);
       });
@@ -375,22 +387,34 @@ TREE_JS = r"""
 
   walk(document.body, 0);
 
-  // Highlight system with repositioning
+  // Highlight system with repositioning + selection
   if (highlight && hlPairs.length > 0) {
+    if (!window.__buSelected) window.__buSelected = new Map();
+    const sel = window.__buSelected;
+
     const positionOverlays = () => {
       document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
       hlPairs.forEach(({ el, ref, num, color }) => {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
+        const isSel = sel.has(num);
+        const borderColor = isSel ? '#f59e0b' : color;
+        const borderWidth = isSel ? '3px' : '2px';
         const ov = document.createElement('div');
         ov.setAttribute('data-bu-highlight', '1');
         ov.setAttribute('data-bu-hl-overlay', '1');
-        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
+        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:${borderWidth} solid ${borderColor};background:${borderColor}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
         const bd = document.createElement('span');
         bd.setAttribute('data-bu-highlight', '1');
         bd.setAttribute('data-bu-hl-overlay', '1');
-        bd.textContent = `${num}:${ref}`;
-        bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        bd.setAttribute('data-bu-badge-num', String(num));
+        bd.textContent = (isSel ? '\u2713 ' : '') + `${num}:${ref}`;
+        bd.style.cssText = `position:absolute;z-index:99999;cursor:pointer;background:${isSel ? '#f59e0b' : color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        bd.onclick = (e) => {
+          e.stopPropagation();
+          if (sel.has(num)) sel.delete(num); else sel.set(num, { num, ref });
+          positionOverlays();
+        };
         document.body.appendChild(ov);
         document.body.appendChild(bd);
       });

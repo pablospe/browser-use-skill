@@ -43,6 +43,12 @@ if [ "$1" = "snapshot" ]; then
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/snapshot.py" "$@"
 fi
 
+# Intercept 'selected' subcommand — read user-selected elements from highlights
+if [ "$1" = "selected" ]; then
+  shift
+  exec uv run --directory "$SKILL_DIR" browser-use "$@" eval "window.__buSelected ? JSON.stringify(Array.from(window.__buSelected.values())) : '[]'"
+fi
+
 # Intercept 'clear-highlights' subcommand — remove highlight overlays
 if [ "$1" = "clear-highlights" ]; then
   shift
