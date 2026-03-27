@@ -56,7 +56,8 @@ bu switch <tab>                  # Switch to tab by index
 bu close-tab [tab]               # Close tab (current if no index)
 
 # Page State — always run state first to get element indices
-bu state                         # URL, title, clickable elements with indices
+bu state                         # URL, title, clickable elements with indices (inline output)
+bu snapshot                      # Structured YAML snapshot saved to .browser-use/*.yml
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
 
 # Interactions — use indices from state
@@ -180,9 +181,42 @@ Chain when you don't need intermediate output. Run separately when you need to p
 | `--json` | Output as JSON |
 | `--mcp` | Run as MCP server via stdin/stdout |
 
+## Snapshot Workflow (token-efficient)
+
+Use `snapshot` instead of `state` to avoid dumping the full page into the conversation context. The snapshot is saved to a YAML file; grep for only the elements you need.
+
+```bash
+# 1. Take snapshot (saved to .browser-use/*.yml)
+bu snapshot
+
+# 2. Grep only interactive elements (textbox, combobox, checkbox, button)
+grep -E 'textbox|combobox|checkbox|button' .browser-use/page-*.yml
+
+# 3. Fill fields by ref number
+bu input 62 "value"
+bu select 61 "Option"
+bu click 75
+```
+
+Snapshot output format (structured YAML, labels attached to fields):
+```yaml
+# url: https://example.com/form
+# page:
+#   viewport: 1408x980
+  - combobox "Salutation*" [ref=61]
+      - option "Mr."
+      - option "Mrs."
+  - textbox "Surname *" [ref=62] [required]
+  - textbox "Email *" [ref=68] [required] [invalid]
+  - checkbox "Consent" [ref=75] [checked] [value="1"]
+  - button [ref=88] [value="Submit"]
+```
+
+Pass extra flags before `snapshot` to forward to browser-use (e.g. `bu --connect snapshot`).
+
 ## Tips
 
-1. **Always run `state` first** to see available elements and their indices
+1. **Prefer `snapshot` over `state`** to keep token usage low — grep the file for what you need
 2. **Use `--headed` for debugging** to see what the browser is doing
 3. **Sessions persist** — browser stays open between commands
 4. **`eval` with JS** is the most powerful extraction method for complex pages

@@ -31,4 +31,10 @@ if [ "$1" = "recipe" ]; then
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/recipe.py" "$@"
 fi
 
+# Intercept 'snapshot' subcommand — structured YAML snapshot saved to file
+if [ "$1" = "snapshot" ]; then
+  shift
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/snapshot.py" "$@"
+fi
+
 exec uv run --directory "$SKILL_DIR" browser-use "$@"
