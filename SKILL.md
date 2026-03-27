@@ -79,12 +79,17 @@ bu --cdp-url ws://localhost:9222/... open <url>  # Connect via specific CDP URL
 
 ```bash
 # Navigation
-bu open <url>                    # Navigate to URL
+bu open <url>                    # Navigate current tab to URL
 bu back                          # Go back in history
 bu scroll down                   # Scroll down (--amount N for pixels)
 bu scroll up                     # Scroll up
 bu switch <tab>                  # Switch to tab by index
 bu close-tab [tab]               # Close tab (current if no index)
+
+# Tabs — bu open navigates the current tab; use eval to open a new tab
+bu eval "window.open('https://example.com', '_blank')"  # Open URL in new tab
+bu switch 0                      # Switch to first tab
+bu switch 1                      # Switch to second tab
 
 # Page State
 bu state                         # URL, title, clickable elements with indices (inline, viewport only)
@@ -371,8 +376,9 @@ bu open https://abc.trycloudflare.com
 5. **Use `--tree` for structural context** — shows nested DOM hierarchy
 6. **Use `bu selected` for interactive workflows** — let users click to select elements
 7. **Use `--headed` for debugging** to see what the browser is doing
-8. **Sessions persist** — browser stays open between commands
-9. **`eval` with JS** is the most powerful extraction method for complex pages
+8. **New tabs via eval** — `bu open` navigates the current tab; use `bu eval "window.open('url', '_blank')"` then `bu switch N`
+9. **Sessions persist** — browser stays open between commands
+10. **`eval` with JS** is the most powerful extraction method for complex pages
 
 ## Troubleshooting
 
