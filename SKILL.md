@@ -22,14 +22,32 @@ bash ~/.claude/skills/browser-use/bu.sh
 - `uv` must be installed (`uv --version`)
 - First run will install browser-use from GitHub into `~/.claude/skills/browser-use/.venv`
 
-## Core Workflow
+## Core Workflow (recommended)
 
-1. **Navigate**: `bu open <url>` — starts browser + daemon if needed
-2. **Inspect**: `bu state` — returns clickable elements with indices
-3. **Interact**: use indices from state (`bu click 5`, `bu input 3 "text"`)
-4. **Verify**: `bu state` or `bu screenshot` to confirm
-5. **Repeat**: browser stays open between commands
-6. **Cleanup**: `bu close` when done
+The fastest way to discover and fill forms:
+
+```bash
+# 1. Open page
+bu --headed open https://example.com/form
+
+# 2. Snapshot — full-DOM scan, stable name-based refs, saved to file
+bu snapshot --interactive              # form elements only
+bu snapshot --interactive --highlight  # + red overlays on page
+
+# 3. Read snapshot (small enough to read directly, no grep needed)
+# Output:
+#   - textbox "Surname *" [your-surname] [required]
+#   - combobox "Salutation" [salutation] [value="Mr."]
+#   - checkbox "Consent" [acceptance] [checked]
+
+# 4. Batch fill — single JS eval, all fields at once
+bu fill '{"your-surname":"Smith","salutation":{"select":"Mrs."},"acceptance":{"check":true}}'
+
+# 5. Verify
+bu snapshot --interactive
+```
+
+**Total: 2 shell calls** to discover + fill a form (vs 16+ with individual commands).
 
 ## Browser Modes
 
@@ -55,18 +73,22 @@ bu scroll up                     # Scroll up
 bu switch <tab>                  # Switch to tab by index
 bu close-tab [tab]               # Close tab (current if no index)
 
-# Page State — always run state first to get element indices
-bu state                         # URL, title, clickable elements with indices (inline output)
-bu snapshot                      # Structured YAML snapshot saved to .browser-use/*.yml
-bu snapshot --interactive        # Same but only form elements (no links/nav)
+# Page State
+bu state                         # URL, title, clickable elements with indices (inline, viewport only)
+bu snapshot                      # Full-DOM structured YAML saved to .browser-use/*.yml
+bu snapshot --interactive        # Form elements only (textbox, combobox, checkbox, button)
+bu snapshot --highlight          # Inject red overlay badges on interactive elements
+bu snapshot -i --highlight       # Both: form-only + highlights
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
 
-# Interactions — use indices from state
+# Form Fill — single JS eval, uses name-based refs from snapshot
+bu fill '<json>'                 # Batch fill (see Batch Fill section below)
+
+# Interactions — use numeric indices from bu state
 bu click <index>                 # Click element by index
 bu click <x> <y>                 # Click at pixel coordinates
 bu type "text"                   # Type into focused element
 bu input <index> "text"          # Click element, then type
-bu fill '<json>'                 # Batch fill fields from JSON (see below)
 bu keys "Enter"                  # Send keyboard keys (also "Control+a", etc.)
 bu select <index> "option"       # Select dropdown option
 bu upload <index> <path>         # Upload file to file input
@@ -117,6 +139,84 @@ bu recipe delete <name>          # Remove a recipe
 
 The Python `browser` object provides: `browser.url`, `browser.title`, `browser.html`, `browser.goto(url)`, `browser.back()`, `browser.click(index)`, `browser.type(text)`, `browser.input(index, text)`, `browser.keys(keys)`, `browser.upload(index, path)`, `browser.screenshot(path)`, `browser.scroll(direction, amount)`, `browser.wait(seconds)`.
 
+## Snapshot
+
+Scans the **full DOM** via a single JS eval — no viewport limits, no missing elements.
+
+```bash
+bu snapshot                      # All elements (links, forms, buttons)
+bu snapshot --interactive        # Form elements only (recommended for forms)
+bu snapshot --highlight          # Add red overlays + name badges on page
+bu snapshot -i --highlight       # Both
+```
+
+### Output format
+
+```yaml
+# url: https://example.com/form
+# cdp: localhost:33339
+# title: My Form Page
+
+  - combobox "Salutation*" [your-salutation] [value="Mr."]
+      - option "Mr."
+      - option "Mrs."
+  - textbox "Surname *" [your-surname] [required] [value="Smith"]
+  - textbox "Email *" [your-email] [required]
+  - checkbox "Consent" [acceptance-1] [checked]
+  - button [_idx15] [value="Submit"]
+```
+
+### Key features
+
+| Feature | `bu state` (original) | `bu snapshot` (new) |
+|---|---|---|
+| DOM coverage | Viewport only | **Full DOM** |
+| Refs | Numeric, change each call | **name attribute, stable** |
+| Labels | Inline text | **Attached to elements** |
+| Current values | Not shown | **`[value="..."]` on each field** |
+| Highlights | None | **Red overlays with `--highlight`** |
+| Output | Inline (eats tokens) | **Saved to `.browser-use/*.yml`** |
+| CDP port | Not shown | **`# cdp: localhost:PORT`** |
+
+### Refs
+
+Snapshot uses the element's `name` attribute as the ref (e.g. `[your-surname]`, `[city]`). These are permanent — they never change between calls or page scrolls. For elements without a name, a fallback `[_idxN]` is used.
+
+### Highlighting
+
+With `--highlight`, red bordered overlays and name badges are injected on the page. Useful for debugging or visual confirmation. Highlights are removed on next snapshot call.
+
+### Grepping (optional)
+
+With `--interactive`, the output is typically small enough to read directly. For full snapshots on complex pages, grep for interactive elements:
+
+```bash
+grep -E 'textbox|combobox|checkbox|button' .browser-use/page-*.yml
+```
+
+## Batch Fill
+
+Fills multiple fields in a **single JS eval** using name-based refs from snapshot.
+
+```bash
+bu fill '{"your-surname":"Smith","your-email":"a@b.com","salutation":{"select":"Mrs."},"consent":{"check":true}}'
+```
+
+### Value types
+
+| Value | Action | Example |
+|---|---|---|
+| `"text"` | Fill text input/textarea | `"your-surname":"Smith"` |
+| `{"select":"opt"}` | Select dropdown option by visible text | `"salutation":{"select":"Mrs."}` |
+| `{"check":true}` | Set checkbox/radio checked state | `"consent":{"check":true}` |
+
+### How it works
+
+- Uses `document.querySelector('[name="..."]')` to find elements — works on all elements regardless of viewport
+- Dispatches proper `input` and `change` events for framework compatibility (React, Vue, etc.)
+- Uses the correct prototype setter (`HTMLInputElement` vs `HTMLTextAreaElement`) to trigger React's synthetic events
+- Reports `filled: N/M` with error details for any failures
+
 ## Cloud API
 
 ```bash
@@ -131,12 +231,21 @@ bu cloud v2 poll <task-id>       # Poll task until done
 
 ## Common Workflows
 
+### Form Filling (optimized)
+
+```bash
+bu --headed open https://example.com/form
+bu snapshot -i --highlight
+# read .browser-use/page-*.yml
+bu fill '{"field1":"value1","field2":"value2","dropdown":{"select":"Option"}}'
+bu snapshot -i  # verify
+```
+
 ### Authenticated Browsing (existing Chrome session)
 
 ```bash
 bu --connect open https://gmail.com   # Reuse logged-in Chrome via CDP
-bu --connect state
-bu --connect eval "document.title"
+bu --connect snapshot -i
 ```
 
 Requires Chrome launched with `--remote-debugging-port=9222`.
@@ -146,6 +255,14 @@ Requires Chrome launched with `--remote-debugging-port=9222`.
 ```bash
 bu profile list                                # Check available profiles
 bu --profile "Default" open https://github.com # Already logged in
+```
+
+### Multi-tool via CDP
+
+Snapshot includes the CDP port in metadata (`# cdp: localhost:PORT`). Other tools (Playwright, DevTools) can connect to the same browser:
+
+```javascript
+const browser = await chromium.connectOverCDP("http://localhost:33339");
 ```
 
 ### Extracting Data via JavaScript
@@ -162,15 +279,6 @@ bu tunnel 3000                             # → https://abc.trycloudflare.com
 bu open https://abc.trycloudflare.com
 ```
 
-## Command Chaining
-
-```bash
-bu open https://example.com && bu state
-bu input 5 "user@example.com" && bu input 6 "password" && bu click 7
-```
-
-Chain when you don't need intermediate output. Run separately when you need to parse `state` to discover indices first.
-
 ## Global Options
 
 | Option | Description |
@@ -183,65 +291,23 @@ Chain when you don't need intermediate output. Run separately when you need to p
 | `--json` | Output as JSON |
 | `--mcp` | Run as MCP server via stdin/stdout |
 
-## Snapshot Workflow (token-efficient)
-
-Use `snapshot` instead of `state` to avoid dumping the full page into the conversation context. The snapshot is saved to a YAML file; grep for only the elements you need.
-
-```bash
-# 1. Take snapshot (saved to .browser-use/*.yml)
-bu snapshot
-
-# 2. Grep only interactive elements (textbox, combobox, checkbox, button)
-grep -E 'textbox|combobox|checkbox|button' .browser-use/page-*.yml
-
-# 3. Fill fields by ref number
-bu input 62 "value"
-bu select 61 "Option"
-bu click 75
-```
-
-Snapshot output format (structured YAML, labels attached to fields):
-```yaml
-# url: https://example.com/form
-# page:
-#   viewport: 1408x980
-  - combobox "Salutation*" [ref=61]
-      - option "Mr."
-      - option "Mrs."
-  - textbox "Surname *" [ref=62] [required]
-  - textbox "Email *" [ref=68] [required] [invalid]
-  - checkbox "Consent" [ref=75] [checked] [value="1"]
-  - button [ref=88] [value="Submit"]
-```
-
-Pass extra flags before `snapshot` to forward to browser-use (e.g. `bu --connect snapshot`).
-
-## Batch Fill
-
-Fill multiple fields in one command instead of separate calls per field:
-
-```bash
-bu fill '{"62":"Schmidt","63":"Anna","61":{"select":"Mrs."},"75":{"check":true}}'
-```
-
-Value types:
-- `"text"` — fill/input text
-- `{"select": "option"}` — select dropdown option
-- `{"check": true}` — toggle checkbox
-
 ## Tips
 
-1. **Prefer `snapshot` over `state`** to keep token usage low — grep the file for what you need
-2. **Use `--headed` for debugging** to see what the browser is doing
-3. **Sessions persist** — browser stays open between commands
-4. **`eval` with JS** is the most powerful extraction method for complex pages
+1. **Prefer `snapshot -i` over `state`** for forms — full DOM, stable refs, values shown
+2. **Use `fill` instead of individual `input`/`select` commands** — single eval, no ref instability
+3. **Use `--highlight` for debugging** — see which elements the snapshot found
+4. **Use `--headed` for debugging** to see what the browser is doing
+5. **Sessions persist** — browser stays open between commands
+6. **`eval` with JS** is the most powerful extraction method for complex pages
 
 ## Troubleshooting
 
 - **First run slow?** Normal — downloading ~200MB of deps into `.venv`. Subsequent runs are instant.
 - **Browser won't start?** `bu close` then `bu --headed open <url>`
-- **Element not found?** `bu scroll down` then `bu state`
+- **Element not found with `state`?** Use `snapshot` instead — it scans the full DOM
+- **Ref changed between calls?** Use `snapshot` — refs are stable name attributes
 - **Unicode errors?** Already handled — `bu.sh` sets `PYTHONUTF8=1` automatically
+- **Highlights not showing?** Ensure `--headed` was used when opening the browser
 
 ## Cleanup
 
@@ -267,8 +333,8 @@ Recipes store DOM access patterns so repeated tasks skip visual discovery entire
   "url": "https://example.com/page",
 
   "auth": {
-    "mode": "connect",      // "connect" | "profile" | "headless"
-    "profile": null,        // Chrome profile name (mode=profile only)
+    "mode": "connect",
+    "profile": null,
     "headed": false,
     "session": "default"
   },
