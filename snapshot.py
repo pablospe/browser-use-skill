@@ -237,7 +237,19 @@ def main():
     # Build YAML
     yaml_lines = build_snapshot(raw_text, field_values, interactive_only=interactive_only)
 
-    # Prepend URL
+    # Detect CDP port from running Chrome
+    cdp_port = ""
+    try:
+        ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+        m = re.search(r'remote-debugging-port=(\d+)', ps.stdout)
+        if m:
+            cdp_port = m.group(1)
+    except Exception:
+        pass
+
+    # Prepend metadata
+    if cdp_port:
+        yaml_lines.insert(0, f"# cdp: localhost:{cdp_port}")
     if url:
         yaml_lines.insert(0, f"# url: {url}")
 
