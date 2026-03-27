@@ -186,12 +186,221 @@ SCAN_JS = r"""
     idx++;
   });
 
+  // Floating dismiss button
+  if (highlight) {
+    const btn = document.createElement('div');
+    btn.setAttribute('data-bu-highlight', '1');
+    btn.innerHTML = '&times;';
+    btn.title = 'Remove highlights';
+    btn.style.cssText = `
+      position:fixed; z-index:100001; cursor:pointer;
+      top:8px; right:8px; width:32px; height:32px;
+      background:#e63946; color:white; font:bold 20px sans-serif;
+      border-radius:50%; display:flex; align-items:center; justify-content:center;
+      box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
+    `;
+    btn.onclick = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    document.body.appendChild(btn);
+  }
+
   return JSON.stringify({
     url: window.location.href,
     title: document.title,
     elements: results,
   });
 })(%HIGHLIGHT%, %FORMS_ONLY%)
+"""
+
+TREE_JS = r"""
+((highlight) => {
+  document.querySelectorAll('[data-bu-highlight]').forEach(el => el.remove());
+
+  const INTERESTING = new Set([
+    'A','BUTTON','INPUT','SELECT','TEXTAREA',
+    'H1','H2','H3','H4','H5','H6',
+    'NAV','MAIN','HEADER','FOOTER','SECTION','ARTICLE','ASIDE','FORM',
+    'UL','OL','LI','TABLE','DETAILS','SUMMARY','IMG','DIALOG',
+  ]);
+  const ARIA_ROLES = new Set([
+    'button','link','tab','menuitem','navigation','search',
+    'tablist','menu','dialog','alert','banner','complementary',
+    'contentinfo','region','tabpanel',
+  ]);
+
+  const getRole = (el) => {
+    const ar = el.getAttribute('role');
+    if (ar) return ar;
+    const tag = el.tagName;
+    const type = el.type || '';
+    const map = {
+      A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox',
+      IMG:'image', NAV:'navigation', MAIN:'main', HEADER:'header',
+      FOOTER:'footer', SECTION:'section', ARTICLE:'article', ASIDE:'aside',
+      FORM:'form', UL:'list', OL:'list', LI:'listitem',
+      TABLE:'table', DETAILS:'details', SUMMARY:'summary', DIALOG:'dialog',
+    };
+    if (tag === 'INPUT') {
+      const im = {checkbox:'checkbox',radio:'radio',submit:'button',file:'file-input'};
+      return im[type] || 'textbox';
+    }
+    if (/^H[1-6]$/.test(tag)) return 'heading';
+    return map[tag] || null;
+  };
+
+  const getLabel = (el) => {
+    const tag = el.tagName;
+    if (tag === 'A' || tag === 'BUTTON' || tag === 'SUMMARY') {
+      const t = el.textContent?.trim();
+      if (t && t.length < 200) return t;
+    }
+    if (tag === 'IMG') return el.alt || el.title || '';
+    if (/^H[1-6]$/.test(tag)) return el.textContent?.trim() || '';
+    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    if (tag === 'NAV' || tag === 'MAIN' || tag === 'SECTION' || tag === 'FORM') {
+      return el.getAttribute('aria-label') || el.getAttribute('id') || '';
+    }
+    if (el.id) {
+      const lab = document.querySelector(`label[for="${el.id}"]`);
+      if (lab) return lab.textContent.trim();
+    }
+    const anc = el.closest('label');
+    if (anc) return anc.textContent.trim();
+    let prev = el.parentElement;
+    while (prev) {
+      const t = prev.previousElementSibling?.textContent?.trim();
+      if (t && t.length < 100) return t;
+      prev = prev.parentElement;
+      if (prev?.tagName === 'FORM' || prev?.tagName === 'BODY') break;
+    }
+    return el.getAttribute('placeholder') || el.title || '';
+  };
+
+  const getRef = (el, idx) => {
+    if (el.name) return el.name;
+    if (el.id) return el.id;
+    if (el.tagName === 'A' && el.href) {
+      try {
+        const u = new URL(el.href);
+        const p = u.pathname.replace(/\/+$/, '').split('/').pop();
+        if (p && p.length < 50) return p;
+      } catch {}
+    }
+    return `_idx${idx}`;
+  };
+
+  const hlColors = {
+    link:'#2563eb', button:'#dc2626', textbox:'#0891b2', combobox:'#7c3aed',
+    checkbox:'#16a34a', radio:'#16a34a', image:'#ea580c', heading:'#6b7280',
+    navigation:'#6b7280', form:'#6b7280', section:'#6b7280',
+    'file-input':'#ea580c', tab:'#7c3aed', menuitem:'#7c3aed',
+  };
+
+  const results = [];
+  let idx = 0;
+
+  function walk(node, depth) {
+    for (const child of node.children) {
+      const tag = child.tagName;
+      const ariaRole = child.getAttribute('role');
+      const isInteresting = INTERESTING.has(tag) || (ariaRole && ARIA_ROLES.has(ariaRole));
+
+      if (!isInteresting) {
+        walk(child, depth);
+        continue;
+      }
+
+      // Skip hidden
+      if (child.offsetParent === null && child.type !== 'hidden' && tag !== 'NAV' && tag !== 'HEADER' && tag !== 'FOOTER' && tag !== 'MAIN') {
+        continue;
+      }
+      if (child.type === 'hidden') { continue; }
+
+      const role = getRole(child);
+      if (!role) { walk(child, depth); continue; }
+
+      const ref = getRef(child, idx);
+      const label = getLabel(child);
+
+      // Skip links/images with no label
+      if ((role === 'link' || role === 'image') && !label) {
+        walk(child, depth);
+        continue;
+      }
+
+      const entry = { role, ref, depth };
+      if (label) entry.label = label;
+
+      if (tag === 'SELECT') {
+        entry.value = child.options[child.selectedIndex]?.text || '';
+        entry.options = Array.from(child.options).map(o => o.text);
+      } else if (child.type === 'checkbox' || child.type === 'radio') {
+        if (child.checked) entry.checked = true;
+      } else if (tag === 'BUTTON' || child.type === 'submit') {
+        const v = child.textContent?.trim() || child.value || '';
+        if (v) entry.value = v;
+      } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+        if (child.value) entry.value = child.value;
+      }
+      if (tag === 'A' && child.href) entry.url = child.href;
+      if (/^H[1-6]$/.test(tag)) entry.level = parseInt(tag[1]);
+      if (child.required) entry.required = true;
+      if (child.disabled) entry.disabled = true;
+      if (child.validity && !child.validity.valid && child.value !== '') entry.invalid = true;
+
+      // Highlight
+      if (highlight) {
+        const rect = child.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const color = hlColors[role] || '#6b7280';
+          const ov = document.createElement('div');
+          ov.setAttribute('data-bu-highlight','1');
+          ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${rect.left+window.scrollX-1}px;top:${rect.top+window.scrollY-1}px;width:${rect.width+2}px;height:${rect.height+2}px;`;
+          const bd = document.createElement('span');
+          bd.setAttribute('data-bu-highlight','1');
+          bd.textContent = ref;
+          bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${rect.left+window.scrollX}px;top:${Math.max(0,rect.top+window.scrollY-16)}px;`;
+          document.body.appendChild(ov);
+          document.body.appendChild(bd);
+        }
+      }
+
+      results.push(entry);
+      idx++;
+
+      // Recurse into structural elements (nav, form, section, etc.)
+      const structural = new Set(['navigation','form','section','article','main','header','footer','details','list','listitem','table','region','dialog']);
+      if (structural.has(role)) {
+        walk(child, depth + 1);
+      }
+      // Don't recurse into leaf elements (links, buttons, inputs)
+    }
+  }
+
+  walk(document.body, 0);
+
+  // Floating dismiss button
+  if (highlight) {
+    const btn = document.createElement('div');
+    btn.setAttribute('data-bu-highlight', '1');
+    btn.innerHTML = '&times;';
+    btn.title = 'Remove highlights';
+    btn.style.cssText = `
+      position:fixed; z-index:100001; cursor:pointer;
+      top:8px; right:8px; width:32px; height:32px;
+      background:#e63946; color:white; font:bold 20px sans-serif;
+      border-radius:50%; display:flex; align-items:center; justify-content:center;
+      box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
+    `;
+    btn.onclick = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    document.body.appendChild(btn);
+  }
+
+  return JSON.stringify({
+    url: window.location.href,
+    title: document.title,
+    elements: results,
+  });
+})(%HIGHLIGHT%)
 """
 
 FORM_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}
@@ -202,8 +411,10 @@ def format_element(el: dict) -> str:
     role = el["role"]
     ref = el["ref"]
     label = el.get("label", "")
+    depth = el.get("depth", 0)
+    indent = "  " * (depth + 1)
 
-    parts = [f'  - {role}']
+    parts = [f'{indent}- {role}']
     if label:
         # Truncate very long labels
         if len(label) > 80:
@@ -227,7 +438,8 @@ def format_element(el: dict) -> str:
             val = val[:57] + "..."
         parts.append(f' [value="{val}"]')
     if el.get("url"):
-        parts.append(f'\n      /url: {el["url"]}')
+        url_indent = "  " * (depth + 2)
+        parts.append(f'\n{url_indent}/url: {el["url"]}')
 
     return "".join(parts)
 
@@ -235,18 +447,24 @@ def format_element(el: dict) -> str:
 def main():
     forms_only = False
     highlight = False
+    tree_mode = False
     extra_args = []
     for arg in sys.argv[1:]:
         if arg in ("--forms", "-f"):
             forms_only = True
         elif arg in ("--highlight", "-h"):
             highlight = True
+        elif arg in ("--tree", "-t"):
+            tree_mode = True
         else:
             extra_args.append(arg)
 
-    # Build JS with flags
-    js = SCAN_JS.replace("%HIGHLIGHT%", "true" if highlight else "false")
-    js = js.replace("%FORMS_ONLY%", "true" if forms_only else "false")
+    # Choose JS scan: tree (nested) or flat
+    if tree_mode:
+        js = TREE_JS.replace("%HIGHLIGHT%", "true" if highlight else "false")
+    else:
+        js = SCAN_JS.replace("%HIGHLIGHT%", "true" if highlight else "false")
+        js = js.replace("%FORMS_ONLY%", "true" if forms_only else "false")
 
     # Run single JS eval — scans full DOM, no viewport limits
     cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js]

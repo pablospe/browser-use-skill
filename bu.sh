@@ -43,4 +43,10 @@ if [ "$1" = "snapshot" ]; then
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/snapshot.py" "$@"
 fi
 
+# Intercept 'clear-highlights' subcommand — remove highlight overlays
+if [ "$1" = "clear-highlights" ]; then
+  shift
+  exec uv run --directory "$SKILL_DIR" browser-use "$@" eval "document.querySelectorAll('[data-bu-highlight]').forEach(e=>e.remove());'cleared'"
+fi
+
 exec uv run --directory "$SKILL_DIR" browser-use "$@"
