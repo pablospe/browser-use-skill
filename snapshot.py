@@ -91,6 +91,7 @@ SCAN_JS = r"""
 
   const els = document.querySelectorAll(selector);
   const results = [];
+  const hlPairs = [];
   let idx = 0;
 
   const hlColors = {
@@ -154,54 +155,52 @@ SCAN_JS = r"""
     if (el.disabled) entry.disabled = true;
     if (el.validity && !el.validity.valid && el.value !== '') entry.invalid = true;
 
-    // Highlight
+    // Track for highlighting
     if (highlight && rect.width > 0 && rect.height > 0) {
-      const color = hlColors[role] || '#6b7280';
-      const overlay = document.createElement('div');
-      overlay.setAttribute('data-bu-highlight', '1');
-      overlay.style.cssText = `
-        position:absolute; z-index:99998; pointer-events:none;
-        border:2px solid ${color}; background:${color}11;
-        border-radius:3px;
-        left:${rect.left + window.scrollX - 1}px;
-        top:${rect.top + window.scrollY - 1}px;
-        width:${rect.width + 2}px;
-        height:${rect.height + 2}px;
-      `;
-      const badge = document.createElement('span');
-      badge.setAttribute('data-bu-highlight', '1');
-      badge.textContent = ref;
-      badge.style.cssText = `
-        position:absolute; z-index:99999; pointer-events:none;
-        background:${color}; color:white; font:bold 10px monospace;
-        padding:1px 4px; border-radius:2px; white-space:nowrap;
-        left:${rect.left + window.scrollX}px;
-        top:${Math.max(0, rect.top + window.scrollY - 16)}px;
-      `;
-      document.body.appendChild(overlay);
-      document.body.appendChild(badge);
+      hlPairs.push({ el, ref, color: hlColors[role] || '#6b7280' });
     }
 
     results.push(entry);
     idx++;
   });
 
-  // Floating dismiss button
-  if (highlight) {
+  // Highlight system with repositioning
+  if (highlight && hlPairs.length > 0) {
+    const positionOverlays = () => {
+      document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
+      hlPairs.forEach(({ el, ref, color }) => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const ov = document.createElement('div');
+        ov.setAttribute('data-bu-highlight', '1');
+        ov.setAttribute('data-bu-hl-overlay', '1');
+        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
+        const bd = document.createElement('span');
+        bd.setAttribute('data-bu-highlight', '1');
+        bd.setAttribute('data-bu-hl-overlay', '1');
+        bd.textContent = ref;
+        bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        document.body.appendChild(ov);
+        document.body.appendChild(bd);
+      });
+    };
+
+    positionOverlays();
+
+    let resizeTimer;
+    const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(positionOverlays, 100); };
+    window.addEventListener('resize', onResize);
+
+    // Dismiss button
     const btn = document.createElement('div');
     btn.setAttribute('data-bu-highlight', '1');
     btn.innerHTML = '&times;';
     btn.title = 'Remove highlights';
-    btn.style.cssText = `
-      position:fixed; z-index:100001; cursor:pointer;
-      top:8px; right:8px; width:32px; height:32px;
-      background:#e63946; color:white; font:bold 20px sans-serif;
-      border-radius:50%; display:flex; align-items:center; justify-content:center;
-      box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
-    `;
-    const clearAll = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
-    btn.onclick = clearAll;
-    window.addEventListener('resize', clearAll, { once: true });
+    btn.style.cssText = `position:fixed;z-index:100001;cursor:pointer;top:8px;right:8px;width:32px;height:32px;background:#e63946;color:white;font:bold 20px sans-serif;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.3);user-select:none;`;
+    btn.onclick = () => {
+      document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+      window.removeEventListener('resize', onResize);
+    };
     document.body.appendChild(btn);
   }
 
@@ -298,6 +297,7 @@ TREE_JS = r"""
   };
 
   const results = [];
+  const hlPairs = [];
   let idx = 0;
 
   function walk(node, depth) {
@@ -349,20 +349,11 @@ TREE_JS = r"""
       if (child.disabled) entry.disabled = true;
       if (child.validity && !child.validity.valid && child.value !== '') entry.invalid = true;
 
-      // Highlight
+      // Track for highlighting
       if (highlight) {
         const rect = child.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          const color = hlColors[role] || '#6b7280';
-          const ov = document.createElement('div');
-          ov.setAttribute('data-bu-highlight','1');
-          ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${rect.left+window.scrollX-1}px;top:${rect.top+window.scrollY-1}px;width:${rect.width+2}px;height:${rect.height+2}px;`;
-          const bd = document.createElement('span');
-          bd.setAttribute('data-bu-highlight','1');
-          bd.textContent = ref;
-          bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${rect.left+window.scrollX}px;top:${Math.max(0,rect.top+window.scrollY-16)}px;`;
-          document.body.appendChild(ov);
-          document.body.appendChild(bd);
+          hlPairs.push({ el: child, ref, color: hlColors[role] || '#6b7280' });
         }
       }
 
@@ -380,22 +371,43 @@ TREE_JS = r"""
 
   walk(document.body, 0);
 
-  // Floating dismiss button
-  if (highlight) {
+  // Highlight system with repositioning
+  if (highlight && hlPairs.length > 0) {
+    const positionOverlays = () => {
+      document.querySelectorAll('[data-bu-hl-overlay]').forEach(e => e.remove());
+      hlPairs.forEach(({ el, ref, color }) => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const ov = document.createElement('div');
+        ov.setAttribute('data-bu-highlight', '1');
+        ov.setAttribute('data-bu-hl-overlay', '1');
+        ov.style.cssText = `position:absolute;z-index:99998;pointer-events:none;border:2px solid ${color};background:${color}11;border-radius:3px;left:${r.left+window.scrollX-1}px;top:${r.top+window.scrollY-1}px;width:${r.width+2}px;height:${r.height+2}px;`;
+        const bd = document.createElement('span');
+        bd.setAttribute('data-bu-highlight', '1');
+        bd.setAttribute('data-bu-hl-overlay', '1');
+        bd.textContent = ref;
+        bd.style.cssText = `position:absolute;z-index:99999;pointer-events:none;background:${color};color:white;font:bold 10px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;left:${r.left+window.scrollX}px;top:${Math.max(0,r.top+window.scrollY-16)}px;`;
+        document.body.appendChild(ov);
+        document.body.appendChild(bd);
+      });
+    };
+
+    positionOverlays();
+
+    let resizeTimer;
+    const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(positionOverlays, 100); };
+    window.addEventListener('resize', onResize);
+
+    // Dismiss button
     const btn = document.createElement('div');
     btn.setAttribute('data-bu-highlight', '1');
     btn.innerHTML = '&times;';
     btn.title = 'Remove highlights';
-    btn.style.cssText = `
-      position:fixed; z-index:100001; cursor:pointer;
-      top:8px; right:8px; width:32px; height:32px;
-      background:#e63946; color:white; font:bold 20px sans-serif;
-      border-radius:50%; display:flex; align-items:center; justify-content:center;
-      box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
-    `;
-    const clearAll = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
-    btn.onclick = clearAll;
-    window.addEventListener('resize', clearAll, { once: true });
+    btn.style.cssText = `position:fixed;z-index:100001;cursor:pointer;top:8px;right:8px;width:32px;height:32px;background:#e63946;color:white;font:bold 20px sans-serif;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.3);user-select:none;`;
+    btn.onclick = () => {
+      document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+      window.removeEventListener('resize', onResize);
+    };
     document.body.appendChild(btn);
   }
 
