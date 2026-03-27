@@ -199,7 +199,9 @@ SCAN_JS = r"""
       border-radius:50%; display:flex; align-items:center; justify-content:center;
       box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
     `;
-    btn.onclick = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    const clearAll = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    btn.onclick = clearAll;
+    window.addEventListener('resize', clearAll, { once: true });
     document.body.appendChild(btn);
   }
 
@@ -391,7 +393,9 @@ TREE_JS = r"""
       border-radius:50%; display:flex; align-items:center; justify-content:center;
       box-shadow:0 2px 8px rgba(0,0,0,0.3); user-select:none;
     `;
-    btn.onclick = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    const clearAll = () => document.querySelectorAll('[data-bu-highlight]').forEach(e => e.remove());
+    btn.onclick = clearAll;
+    window.addEventListener('resize', clearAll, { once: true });
     document.body.appendChild(btn);
   }
 
