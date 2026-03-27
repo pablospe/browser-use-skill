@@ -512,9 +512,10 @@ FORM_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file-input"
 
 # --- ARIA / CDP helpers ---
 
-# Roles to skip entirely (internal Chrome scaffolding, not useful for agents)
+# Roles to skip entirely (internal Chrome scaffolding / text leaves, not useful for agents)
 _SKIP_ROLES = {
     "none", "generic", "InlineTextBox", "LineBreak",
+    "StaticText", "LabelText",
 }
 
 # Structural roles that act as containers — rendered as tree nesting
@@ -546,7 +547,8 @@ def _cdp_send(ws_url: str, method: str, params: dict | None = None) -> dict:
     """Send a single CDP command over WebSocket and return the result."""
     import websocket  # websocket-client
 
-    ws = websocket.create_connection(ws_url, timeout=10)
+    # Suppress Origin header to avoid Chrome's --remote-allow-origins check
+    ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
     try:
         msg = {"id": 1, "method": method, "params": params or {}}
         ws.send(json.dumps(msg))
