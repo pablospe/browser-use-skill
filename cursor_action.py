@@ -6,8 +6,10 @@ elements. Shows a click ripple on click actions. Persists across calls.
 """
 
 import json
+import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
@@ -151,7 +153,7 @@ ACTION_TEMPLATES = {
   %FIND_BY_REF%
 
   var el = __buFindRef('%REF%');
-  if (!el) return 'ERROR: no element found for ref=%REF%';
+  if (!el) return JSON.stringify({error: 'no element found for ref=%REF%'});
 
   el.scrollIntoView({block:'center'});
 
@@ -162,15 +164,15 @@ ACTION_TEMPLATES = {
   // Animate cursor to target (tracks element for scroll repositioning)
   window.__buCursor.moveToEl(el);
 
-  // Click after animation delay
+  // Click after brief delay (JS fallback)
   setTimeout(function() {
     window.__buCursor.ripple(cx, cy);
     el.focus();
     el.click();
     el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:cx, clientY:cy}));
-  }, 450);
+  }, 100);
 
-  return 'clicked: ' + el.tagName.toLowerCase() + '[ref=%REF%]';
+  return JSON.stringify({ok: true, tag: el.tagName.toLowerCase(), ref: '%REF%', x: cx, y: cy});
 })()
 """,
     "hover": r"""
@@ -179,7 +181,7 @@ ACTION_TEMPLATES = {
   %FIND_BY_REF%
 
   var el = __buFindRef('%REF%');
-  if (!el) return 'ERROR: no element found for ref=%REF%';
+  if (!el) return JSON.stringify({error: 'no element found for ref=%REF%'});
 
   el.scrollIntoView({block:'center'});
 
@@ -189,13 +191,14 @@ ACTION_TEMPLATES = {
 
   window.__buCursor.moveToEl(el);
 
+  // Also dispatch JS events as fallback
   setTimeout(function() {
     var r2 = el.getBoundingClientRect();
     el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:r2.left+r2.width/2, clientY:r2.top+r2.height/2}));
     el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true, clientX:r2.left+r2.width/2, clientY:r2.top+r2.height/2}));
-  }, 450);
+  }, 100);
 
-  return 'hovered: ' + el.tagName.toLowerCase() + '[ref=%REF%]';
+  return JSON.stringify({ok: true, tag: el.tagName.toLowerCase(), ref: '%REF%', x: cx, y: cy});
 })()
 """,
     "scroll": r"""
@@ -291,6 +294,165 @@ ACTION_TEMPLATES = {
 }
 
 
+def _detect_cdp_port() -> str | None:
+    """Detect the Chrome remote-debugging-port from the process list."""
+    try:
+        ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+        m = re.search(r"remote-debugging-port=(\d+)", ps.stdout)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _get_debugger_ws_url(cdp_port: str) -> str:
+    """Get the page's WebSocket debugger URL from CDP /json endpoint."""
+    url = f"http://localhost:{cdp_port}/json"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        targets = json.loads(resp.read())
+    for t in targets:
+        if t.get("type") == "page":
+            return t["webSocketDebuggerUrl"]
+    for t in targets:
+        if "webSocketDebuggerUrl" in t:
+            return t["webSocketDebuggerUrl"]
+    raise RuntimeError(f"No debuggable page target found on CDP port {cdp_port}")
+
+
+def _cdp_send(ws_url: str, method: str, params: dict | None = None) -> dict:
+    """Send a single CDP command over WebSocket and return the result."""
+    import websocket  # websocket-client
+
+    ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
+    try:
+        msg = {"id": 1, "method": method, "params": params or {}}
+        ws.send(json.dumps(msg))
+        while True:
+            resp = json.loads(ws.recv())
+            if resp.get("id") == 1:
+                if "error" in resp:
+                    raise RuntimeError(f"CDP error: {resp['error']}")
+                return resp.get("result", {})
+    finally:
+        ws.close()
+
+
+def _cdp_mouse(x: float, y: float, click: bool = False) -> bool:
+    """Move the real browser cursor to (x, y) via CDP. Optionally click."""
+    cdp_port = _detect_cdp_port()
+    if not cdp_port:
+        return False
+    try:
+        ws_url = _get_debugger_ws_url(cdp_port)
+        # Move cursor (triggers JS mouseover/mouseenter + some CSS :hover)
+        _cdp_send(ws_url, "Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": int(x),
+            "y": int(y),
+        })
+        if click:
+            _cdp_send(ws_url, "Input.dispatchMouseEvent", {
+                "type": "mousePressed",
+                "x": int(x),
+                "y": int(y),
+                "button": "left",
+                "clickCount": 1,
+            })
+            _cdp_send(ws_url, "Input.dispatchMouseEvent", {
+                "type": "mouseReleased",
+                "x": int(x),
+                "y": int(y),
+                "button": "left",
+                "clickCount": 1,
+            })
+        return True
+    except Exception as e:
+        print(f"CDP mouse fallback: {e}", file=sys.stderr)
+        return False
+
+
+def _cdp_force_hover(ref: str) -> bool:
+    """Force CSS :hover on an element via CDP CSS.forcePseudoState.
+
+    Uses DOM.performSearch to find the element by name/id/ref, then
+    forces the :hover pseudo-class. This reliably triggers CSS :hover
+    rules (dropdown menus, tooltips, etc.).
+    """
+    cdp_port = _detect_cdp_port()
+    if not cdp_port:
+        return False
+    try:
+        import websocket  # websocket-client
+
+        ws_url = _get_debugger_ws_url(cdp_port)
+        ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
+        msg_id = [0]
+
+        def cdp(method, params=None):
+            msg_id[0] += 1
+            ws.send(json.dumps({"id": msg_id[0], "method": method, "params": params or {}}))
+            while True:
+                resp = json.loads(ws.recv())
+                if resp.get("id") == msg_id[0]:
+                    if "error" in resp:
+                        raise RuntimeError(f"CDP error: {resp['error']}")
+                    return resp.get("result", {})
+
+        try:
+            cdp("DOM.enable")
+            cdp("CSS.enable")
+
+            # Find the element's node ID — try name attr, then id, then text search
+            selectors = [
+                f'[name="{ref}"]',
+                f'#{ref}',
+                f'a[href*="{ref}"]',
+            ]
+            node_id = None
+            for sel in selectors:
+                search = cdp("DOM.performSearch", {"query": sel})
+                if search.get("resultCount", 0) > 0:
+                    results = cdp("DOM.getSearchResults", {
+                        "searchId": search["searchId"],
+                        "fromIndex": 0,
+                        "toIndex": 1,
+                    })
+                    if results.get("nodeIds"):
+                        node_id = results["nodeIds"][0]
+                        break
+
+            if not node_id:
+                return False
+
+            # Walk up to find nearest hoverable parent (often the hover target
+            # is a parent <li> or <div>, not the link itself)
+            # Force :hover on the element AND its parent (covers both patterns)
+            cdp("CSS.forcePseudoState", {
+                "nodeId": node_id,
+                "forcedPseudoClasses": ["hover"],
+            })
+
+            # Also force :hover on the parent node
+            try:
+                node_info = cdp("DOM.describeNode", {"nodeId": node_id})
+                parent_id = node_info.get("node", {}).get("parentId")
+                if parent_id:
+                    cdp("CSS.forcePseudoState", {
+                        "nodeId": parent_id,
+                        "forcedPseudoClasses": ["hover"],
+                    })
+            except Exception:
+                pass  # Parent hover is best-effort
+
+            return True
+        finally:
+            ws.close()
+    except Exception as e:
+        print(f"CDP forcePseudoState fallback: {e}", file=sys.stderr)
+        return False
+
+
 def resolve_ref(ref: str) -> str:
     """If ref is a number, look up the actual ref name from the latest snapshot."""
     if not ref.lstrip("#").isdigit():
@@ -367,9 +529,31 @@ def main():
     try:
         data = json.loads(result.stdout)
         output = data.get("data", {}).get("result", "")
-        print(output)
     except (json.JSONDecodeError, KeyError):
-        print(result.stdout)
+        output = result.stdout
+
+    # For hover/click: dispatch real CDP mouse events
+    if action in ("hover", "click") and output:
+        try:
+            act_data = json.loads(output)
+            if act_data.get("ok") and "x" in act_data and "y" in act_data:
+                is_click = action == "click"
+                used_cdp = _cdp_mouse(act_data["x"], act_data["y"], click=is_click)
+                # For hover: also force CSS :hover via CDP (reliable for dropdown menus)
+                if action == "hover":
+                    ref_used = act_data.get("ref", "")
+                    _cdp_force_hover(ref_used)
+                method = "CDP" if used_cdp else "JS-only"
+                verb = "clicked" if is_click else "hovered"
+                print(f"{verb} ({method}): {act_data['tag']}[ref={act_data['ref']}]")
+            elif act_data.get("error"):
+                print(f"ERROR: {act_data['error']}")
+            else:
+                print(output)
+        except (json.JSONDecodeError, KeyError):
+            print(output)
+    else:
+        print(output)
 
 
 if __name__ == "__main__":
