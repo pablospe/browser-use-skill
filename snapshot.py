@@ -97,7 +97,7 @@ INTERACTIVE_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file
 SKIP_TAGS = {"div", "span", "li", "label", "img"}
 
 
-def build_snapshot(raw_text: str) -> list[str]:
+def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None) -> list[str]:
     """Convert browser-use state text into structured YAML lines."""
     lines = raw_text.split("\n")
     yaml_lines = []
@@ -139,6 +139,12 @@ def build_snapshot(raw_text: str) -> list[str]:
                 # Use preceding text as label
                 label = current_label
                 current_label = None
+
+                # Inject current value from JS if available
+                if field_values and not el.get("value"):
+                    name = el.get("name", "")
+                    if name and name in field_values:
+                        el["value"] = field_values[name]
 
                 yaml_line = to_yaml_line(role, el, label, indent=1)
                 yaml_lines.append(yaml_line)
@@ -192,16 +198,34 @@ def main():
         print("No state data", file=sys.stderr)
         sys.exit(1)
 
-    # Also grab current URL via eval
-    url_cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", "window.location.href"]
-    url_result = subprocess.run(url_cmd, capture_output=True, text=True)
+    # Grab URL and current field values via JS eval
+    js_code = """JSON.stringify({
+        url: window.location.href,
+        values: Object.fromEntries(
+            Array.from(document.querySelectorAll('input,select,textarea'))
+                .map((el, i) => {
+                    let v = el.tagName === 'SELECT'
+                        ? el.options[el.selectedIndex]?.text
+                        : el.value;
+                    return v ? [el.name || el.id || String(i), v] : null;
+                })
+                .filter(Boolean)
+        )
+    })"""
+    eval_cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js_code]
+    eval_result = subprocess.run(eval_cmd, capture_output=True, text=True)
     url = ""
-    if url_result.returncode == 0:
-        url_data = json.loads(url_result.stdout)
-        url = url_data.get("data", {}).get("result", "")
+    field_values: dict[str, str] = {}
+    if eval_result.returncode == 0:
+        eval_data = json.loads(eval_result.stdout)
+        result_str = eval_data.get("data", {}).get("result", "")
+        if result_str:
+            parsed = json.loads(result_str)
+            url = parsed.get("url", "")
+            field_values = parsed.get("values", {})
 
     # Build YAML
-    yaml_lines = build_snapshot(raw_text)
+    yaml_lines = build_snapshot(raw_text, field_values)
 
     # Prepend URL
     if url:
