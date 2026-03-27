@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse browser-use state output into structured YAML and save to file."""
+"""Full-DOM snapshot via JS eval — no viewport limits, stable refs, optional highlighting."""
 
 import json
 import re
@@ -11,191 +11,169 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent
 SNAPSHOT_DIR = SKILL_DIR / ".browser-use"
 
+# JS that scans the entire DOM for interactive elements and their labels.
+# Returns JSON with url, title, elements[]. Uses name/id as stable ref.
+# Optionally injects highlight overlays.
+SCAN_JS = r"""
+((highlight) => {
+  // Remove previous highlights
+  document.querySelectorAll('[data-bu-highlight]').forEach(el => el.remove());
 
-def parse_element(raw: str) -> dict | None:
-    """Parse a browser-use element line like [62]<input maxlength=400 type=text name=your-surname required=true />"""
-    m = re.match(r"\[(\d+)\]<(\w+)\s*(.*?)\s*/?>", raw)
-    if not m:
-        return None
-    idx, tag, attrs_str = m.group(1), m.group(2), m.group(3)
-    el = {"ref": int(idx), "tag": tag}
+  const getLabel = (el) => {
+    // 1. Explicit <label for="id">
+    if (el.id) {
+      const lab = document.querySelector(`label[for="${el.id}"]`);
+      if (lab) return lab.textContent.trim();
+    }
+    // 2. Ancestor <label>
+    const ancestor = el.closest('label');
+    if (ancestor) return ancestor.textContent.trim();
+    // 3. Previous sibling or parent text
+    let prev = el.parentElement;
+    while (prev) {
+      const text = prev.previousElementSibling?.textContent?.trim();
+      if (text && text.length < 100) return text;
+      prev = prev.parentElement;
+      if (prev?.tagName === 'FORM' || prev?.tagName === 'BODY') break;
+    }
+    // 4. Placeholder or aria-label
+    return el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+  };
 
-    # Parse key=value attributes
-    for am in re.finditer(r'(\w[\w-]*)=([^\s]+)', attrs_str):
-        key, val = am.group(1), am.group(2)
-        if val in ("true", "false"):
-            val = val == "true"
-        el[key] = val
+  const roleMap = {
+    'SELECT': 'combobox',
+    'TEXTAREA': 'textbox',
+    'BUTTON': 'button',
+  };
+  const inputTypeRole = {
+    'checkbox': 'checkbox',
+    'radio': 'radio',
+    'submit': 'button',
+    'file': 'file-input',
+  };
 
-    # Parse compound_components for selects (options list)
-    comp = re.search(r'compound_components=\((.+)\)', attrs_str)
-    if comp:
-        options_m = re.search(r'options=([^)]+)', comp.group(1))
-        if options_m:
-            el["options"] = options_m.group(1).split("|")
+  const els = document.querySelectorAll('input,select,textarea,button,[role="button"]');
+  const results = [];
+  let idx = 0;
 
-    return el
+  els.forEach((el) => {
+    // Skip hidden elements
+    if (el.offsetParent === null && el.type !== 'hidden') return;
+    if (el.type === 'hidden') return;
+
+    const tag = el.tagName;
+    let role = roleMap[tag] || 'textbox';
+    if (tag === 'INPUT') {
+      role = inputTypeRole[el.type] || 'textbox';
+    }
+
+    const ref = el.name || el.id || `_idx${idx}`;
+    const label = getLabel(el);
+
+    const entry = { role, ref, label };
+
+    // Value
+    if (tag === 'SELECT') {
+      entry.value = el.options[el.selectedIndex]?.text || '';
+      entry.options = Array.from(el.options).map(o => o.text);
+    } else if (el.type === 'checkbox' || el.type === 'radio') {
+      if (el.checked) entry.checked = true;
+    } else if (tag === 'BUTTON' || el.type === 'submit') {
+      entry.value = el.textContent?.trim() || el.value || '';
+    } else {
+      if (el.value) entry.value = el.value;
+    }
+
+    // Attributes
+    if (el.required) entry.required = true;
+    if (el.disabled) entry.disabled = true;
+    if (!el.validity?.valid && el.value !== '') entry.invalid = true;
+
+    // Highlight overlay
+    if (highlight) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const overlay = document.createElement('div');
+        overlay.setAttribute('data-bu-highlight', '1');
+        overlay.style.cssText = `
+          position:absolute; z-index:99999; pointer-events:none;
+          border:2px solid #e63946; background:rgba(230,57,70,0.08);
+          border-radius:3px;
+          left:${rect.left + window.scrollX - 1}px;
+          top:${rect.top + window.scrollY - 1}px;
+          width:${rect.width + 2}px;
+          height:${rect.height + 2}px;
+        `;
+        const badge = document.createElement('span');
+        badge.setAttribute('data-bu-highlight', '1');
+        badge.textContent = ref;
+        badge.style.cssText = `
+          position:absolute; z-index:100000; pointer-events:none;
+          background:#e63946; color:white; font:bold 10px monospace;
+          padding:1px 4px; border-radius:2px; white-space:nowrap;
+          left:${rect.left + window.scrollX}px;
+          top:${Math.max(0, rect.top + window.scrollY - 16)}px;
+        `;
+        document.body.appendChild(overlay);
+        document.body.appendChild(badge);
+      }
+    }
+
+    results.push(entry);
+    idx++;
+  });
+
+  return JSON.stringify({
+    url: window.location.href,
+    title: document.title,
+    elements: results,
+  });
+})(%HIGHLIGHT%)
+"""
 
 
-def classify_element(el: dict) -> str:
-    """Map tag+type to a role name similar to playwright-cli."""
-    tag = el["tag"]
-    typ = el.get("type", "")
+def format_element(el: dict) -> str:
+    """Format one element as a YAML-like line."""
+    role = el["role"]
+    ref = el["ref"]
+    label = el.get("label", "")
 
-    if tag == "select":
-        return "combobox"
-    if tag == "textarea":
-        return "textbox"
-    if tag == "input":
-        if typ == "checkbox":
-            return "checkbox"
-        if typ == "radio":
-            return "radio"
-        if typ == "submit":
-            return "button"
-        if typ == "file":
-            return "file-input"
-        return "textbox"
-    if tag == "button":
-        return "button"
-    if tag == "a":
-        return "link"
-    if tag == "img":
-        return "image"
-    return tag
+    parts = [f'  - {role}']
+    if label:
+        parts.append(f' "{label}"')
+    parts.append(f' [{ref}]')
 
-
-def to_yaml_line(role: str, el: dict, label: str | None, indent: int) -> str:
-    """Format one element as a YAML-like line matching playwright-cli style."""
-    prefix = "  " * indent + "- "
-    ref = f"[ref={el['ref']}]"
-
-    # Build display name
-    name_part = f' "{label}"' if label else ""
-
-    # Attributes to show
-    extras = []
     if el.get("required"):
-        extras.append("[required]")
+        parts.append(" [required]")
     if el.get("invalid"):
-        extras.append("[invalid]")
-    if el.get("checked") is True:
-        extras.append("[checked]")
+        parts.append(" [invalid]")
+    if el.get("checked"):
+        parts.append(" [checked]")
     if el.get("disabled"):
-        extras.append("[disabled]")
+        parts.append(" [disabled]")
     if el.get("value"):
-        extras.append(f'[value="{el["value"]}"]')
+        parts.append(f' [value="{el["value"]}"]')
 
-    extra_str = " " + " ".join(extras) if extras else ""
-
-    line = f"{prefix}{role}{name_part} {ref}{extra_str}"
-
-    return line
-
-
-INTERACTIVE_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}
-SKIP_TAGS = {"div", "span", "li", "label", "img"}
-
-
-def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None, *, interactive_only: bool = False) -> list[str]:
-    """Convert browser-use state text into structured YAML lines."""
-    lines = raw_text.split("\n")
-    yaml_lines = []
-    current_label = None
-    page_meta = {}
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Page metadata
-        if stripped.startswith("viewport:"):
-            page_meta["viewport"] = stripped.split(":", 1)[1].strip()
-            continue
-        if stripped.startswith("page:"):
-            page_meta["page"] = stripped.split(":", 1)[1].strip()
-            continue
-        if stripped.startswith("scroll:"):
-            page_meta["scroll"] = stripped.split(":", 1)[1].strip()
-            continue
-
-        # Strip shadow DOM markers
-        if "|SHADOW" in stripped:
-            stripped = re.sub(r'\|SHADOW\(open\)\|\*?', '', stripped).strip()
-            if not stripped:
-                continue
-
-        # Try to parse as an element
-        el_match = re.search(r'\[(\d+)\]<\w+.*?/?>', stripped)
-        if el_match:
-            raw_el = stripped[el_match.start():]
-            el = parse_element(raw_el)
-            if el:
-                role = classify_element(el)
-
-                # Skip non-interactive, non-link noise elements
-                if role in SKIP_TAGS:
-                    continue
-
-                # In interactive mode, skip links and other non-form elements
-                if interactive_only and role not in INTERACTIVE_ROLES:
-                    continue
-
-                # Use preceding text as label
-                label = current_label
-                current_label = None
-
-                # Inject current value from JS if available
-                if field_values and not el.get("value"):
-                    name = el.get("name", "")
-                    if name and name in field_values:
-                        el["value"] = field_values[name]
-
-                yaml_line = to_yaml_line(role, el, label, indent=1)
-                yaml_lines.append(yaml_line)
-
-                # Show options for combobox
-                if el.get("options"):
-                    for opt in el["options"]:
-                        yaml_lines.append(f"      - option \"{opt}\"")
-
-                continue
-
-        # Plain text lines — potential labels or link text
-        if stripped and not stripped.startswith("[") and not stripped.startswith("|"):
-            # Indented line = child text of previous element (link text, etc.)
-            if line.startswith("\t") or line.startswith("  "):
-                if yaml_lines:
-                    last = yaml_lines[-1]
-                    role_m = re.match(r'(\s*- \w[\w-]*)(.*?)(\[ref=\d+\].*)', last)
-                    if role_m and '"' not in role_m.group(2):
-                        yaml_lines[-1] = f'{role_m.group(1)} "{stripped}" {role_m.group(3)}'
-            else:
-                # Standalone text = label for the next element
-                current_label = stripped
-
-    # Build final output
-    output = []
-    output.append("# page:")
-    for k, v in page_meta.items():
-        output.append(f"#   {k}: {v}")
-    output.append("")
-    output.extend(yaml_lines)
-
-    return output
+    return "".join(parts)
 
 
 def main():
-    # Get extra args to pass to browser-use (e.g. --connect, --session)
     interactive_only = False
+    highlight = False
     extra_args = []
     for arg in sys.argv[1:]:
         if arg in ("--interactive", "-i"):
             interactive_only = True
+        elif arg in ("--highlight", "-h"):
+            highlight = True
         else:
             extra_args.append(arg)
 
-    # Run browser-use --json state
-    cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["state"]
+    # Build JS with highlight flag
+    js = SCAN_JS.replace("%HIGHLIGHT%", "true" if highlight else "false")
+
+    # Run single JS eval — scans full DOM, no viewport limits
+    cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -203,41 +181,18 @@ def main():
         sys.exit(result.returncode)
 
     data = json.loads(result.stdout)
-    raw_text = data.get("data", {}).get("_raw_text", "")
-    if not raw_text:
-        print("No state data", file=sys.stderr)
+    result_str = data.get("data", {}).get("result", "")
+    if not result_str:
+        print("No data returned from eval", file=sys.stderr)
         sys.exit(1)
 
-    # Grab URL and current field values via JS eval
-    js_code = """JSON.stringify({
-        url: window.location.href,
-        values: Object.fromEntries(
-            Array.from(document.querySelectorAll('input,select,textarea'))
-                .map((el, i) => {
-                    let v = el.tagName === 'SELECT'
-                        ? el.options[el.selectedIndex]?.text
-                        : el.value;
-                    return v ? [el.name || el.id || String(i), v] : null;
-                })
-                .filter(Boolean)
-        )
-    })"""
-    eval_cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js_code]
-    eval_result = subprocess.run(eval_cmd, capture_output=True, text=True)
-    url = ""
-    field_values: dict[str, str] = {}
-    if eval_result.returncode == 0:
-        eval_data = json.loads(eval_result.stdout)
-        result_str = eval_data.get("data", {}).get("result", "")
-        if result_str:
-            parsed = json.loads(result_str)
-            url = parsed.get("url", "")
-            field_values = parsed.get("values", {})
+    page = json.loads(result_str)
+    elements = page.get("elements", [])
 
-    # Build YAML
-    yaml_lines = build_snapshot(raw_text, field_values, interactive_only=interactive_only)
+    # Filter if interactive only (skip links — though we don't collect them via this JS)
+    # All elements from this scan are interactive by nature
 
-    # Detect CDP port from running Chrome
+    # Detect CDP port
     cdp_port = ""
     try:
         ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
@@ -247,13 +202,23 @@ def main():
     except Exception:
         pass
 
-    # Prepend metadata
+    # Build output
+    lines = []
+    lines.append(f'# url: {page.get("url", "")}')
     if cdp_port:
-        yaml_lines.insert(0, f"# cdp: localhost:{cdp_port}")
-    if url:
-        yaml_lines.insert(0, f"# url: {url}")
+        lines.append(f"# cdp: localhost:{cdp_port}")
+    lines.append(f'# title: {page.get("title", "")}')
+    lines.append("")
 
-    content = "\n".join(yaml_lines) + "\n"
+    for el in elements:
+        if interactive_only and el["role"] not in {"textbox", "combobox", "checkbox", "radio", "button", "file-input"}:
+            continue
+        lines.append(format_element(el))
+        if el.get("options"):
+            for opt in el["options"]:
+                lines.append(f'      - option "{opt}"')
+
+    content = "\n".join(lines) + "\n"
 
     # Save to file
     SNAPSHOT_DIR.mkdir(exist_ok=True)

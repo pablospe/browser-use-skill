@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Batch fill form fields in one invocation via JSON map of ref->value.
+"""Batch fill form fields in one JS eval via JSON map of name->value.
 
 Usage:
-  bu fill '{"62":"Schmidt","63":"Anna","61":{"select":"Mrs."},"75":{"check":true}}'
+  bu fill '{"your-surname":"Schmidt","your-firstname":"Anna","your-salutation":{"select":"Mrs."},"acceptance-543":{"check":true}}'
 
-Keys are ref numbers (as strings). Values are:
-  - string: fill/input text into the element
-  - {"select": "option"}: select a dropdown option
-  - {"check": true/false}: check/uncheck a checkbox
+Keys are element name attributes (stable refs from snapshot).
+Values are:
+  - string: set input/textarea value
+  - {"select": "option"}: select a dropdown option by visible text
+  - {"check": true/false}: set checkbox/radio checked state
 """
 
 import json
@@ -17,17 +18,54 @@ from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
 
+FILL_JS = r"""
+((fields) => {
+  let filled = 0;
+  const errors = [];
+  for (const [name, action] of Object.entries(fields)) {
+    const el = document.querySelector(`[name="${name}"]`);
+    if (!el) { errors.push(name + ': not found'); continue; }
 
-def run_bu(extra_args: list[str], cmd: list[str]) -> tuple[bool, str]:
-    """Run a browser-use command and return (success, output)."""
-    full = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use"] + extra_args + cmd
-    result = subprocess.run(full, capture_output=True, text=True)
-    out = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, out
+    try {
+      if (typeof action === 'string') {
+        // Text input/textarea — use matching prototype setter for React compat
+        const proto = el.tagName === 'TEXTAREA'
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+        const nativeSet = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (nativeSet) nativeSet.call(el, action);
+        else el.value = action;
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+        filled++;
+      } else if (action.select !== undefined) {
+        // Select dropdown by visible text
+        const opts = Array.from(el.options);
+        const opt = opts.find(o => o.text === action.select);
+        if (opt) {
+          el.value = opt.value;
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+          filled++;
+        } else {
+          errors.push(name + ': option "' + action.select + '" not found');
+        }
+      } else if (action.check !== undefined) {
+        el.checked = !!action.check;
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+        filled++;
+      } else {
+        errors.push(name + ': unknown action');
+      }
+    } catch (e) {
+      errors.push(name + ': ' + e.message);
+    }
+  }
+  return JSON.stringify({filled, total: Object.keys(fields).length, errors});
+})(%FIELDS%)
+"""
 
 
 def main():
-    # Separate extra flags (--connect, --session, etc.) from the JSON argument
     extra_args = []
     json_str = None
     for arg in sys.argv[1:]:
@@ -37,7 +75,7 @@ def main():
             json_str = arg
 
     if not json_str:
-        print("Usage: bu fill '{\"62\":\"text\",\"61\":{\"select\":\"Mr.\"}}'", file=sys.stderr)
+        print('Usage: bu fill \'{"your-surname":"text","your-salutation":{"select":"Mr."}}\'', file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -46,36 +84,26 @@ def main():
         print(f"Invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
-    errors = []
-    filled = 0
+    # Inject fields into JS and run single eval
+    js = FILL_JS.replace("%FIELDS%", json.dumps(fields))
+    cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["eval", js]
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
-    for ref, value in fields.items():
-        if isinstance(value, str):
-            ok, out = run_bu(extra_args, ["input", ref, value])
-        elif isinstance(value, dict):
-            if "select" in value:
-                ok, out = run_bu(extra_args, ["select", ref, value["select"]])
-            elif "check" in value:
-                # click toggles checkbox state
-                ok, out = run_bu(extra_args, ["click", ref])
-            else:
-                print(f"ref {ref}: unknown action {value}", file=sys.stderr)
-                errors.append(ref)
-                continue
-        else:
-            print(f"ref {ref}: unsupported value type {type(value).__name__}", file=sys.stderr)
-            errors.append(ref)
-            continue
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        sys.exit(result.returncode)
 
-        if ok:
-            filled += 1
-        else:
-            print(f"ref {ref}: {out}", file=sys.stderr)
-            errors.append(ref)
-
-    print(f"filled: {filled}/{len(fields)}")
-    if errors:
-        print(f"errors: {', '.join(errors)}")
+    data = json.loads(result.stdout)
+    result_str = data.get("data", {}).get("result", "")
+    if result_str:
+        out = json.loads(result_str)
+        print(f"filled: {out['filled']}/{out['total']}")
+        if out.get("errors"):
+            for err in out["errors"]:
+                print(f"  error: {err}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("No result from eval", file=sys.stderr)
         sys.exit(1)
 
 
