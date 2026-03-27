@@ -32,7 +32,7 @@ if (!window.__buCursor || !window.__buCursor.moveToEl) {
     background:radial-gradient(circle, #ff4444 0%, #ff4444 40%, rgba(255,68,68,0.4) 70%, transparent 100%);
     box-shadow:0 0 15px 3px rgba(255,68,68,0.5);
     transform:translate(-50%,-50%);
-    transition:left 0.4s cubic-bezier(0.4,0,0.2,1), top 0.4s cubic-bezier(0.4,0,0.2,1), opacity 0.2s;
+    transition:opacity 0.2s;
     left:-50px; top:-50px; opacity:0;
   `;
   document.body.appendChild(dot);
@@ -45,7 +45,7 @@ if (!window.__buCursor || !window.__buCursor.moveToEl) {
     width:10px; height:10px; border-radius:50%;
     background:rgba(255,68,68,0.3);
     transform:translate(-50%,-50%);
-    transition:left 0.55s cubic-bezier(0.4,0,0.2,1), top 0.55s cubic-bezier(0.4,0,0.2,1), opacity 0.2s;
+    transition:opacity 0.2s;
     left:-50px; top:-50px; opacity:0;
   `;
   document.body.appendChild(trail);
@@ -291,6 +291,27 @@ ACTION_TEMPLATES = {
 }
 
 
+def resolve_ref(ref: str) -> str:
+    """If ref is a number, look up the actual ref name from the latest snapshot."""
+    if not ref.lstrip("#").isdigit():
+        return ref
+    num = int(ref.lstrip("#"))
+    # Find the latest snapshot
+    snapshot_dir = SKILL_DIR / ".browser-use"
+    if not snapshot_dir.exists():
+        return ref
+    files = sorted(snapshot_dir.glob("page-*.yml"))
+    if not files:
+        return ref
+    import re as _re
+    for line in files[-1].read_text().splitlines():
+        m = _re.search(r'#(\d+)\s+\[([^\]]+)\]', line)
+        if m and int(m.group(1)) == num:
+            return m.group(2)
+    print(f"Warning: #{num} not found in latest snapshot, using as-is", file=sys.stderr)
+    return ref
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: cursor_action.py <action> [ref] [extra_args...]", file=sys.stderr)
@@ -304,7 +325,7 @@ def main():
         if len(sys.argv) < 3:
             print(f"Usage: cursor_action.py {action} <ref>", file=sys.stderr)
             sys.exit(1)
-        ref = sys.argv[2]
+        ref = resolve_ref(sys.argv[2])
         extra_args = sys.argv[3:]
         js = ACTION_TEMPLATES[action]
         js = js.replace("%CURSOR_INIT%", CURSOR_INIT_JS)

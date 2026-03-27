@@ -74,20 +74,25 @@ if [ "$1" = "cursor" ]; then
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
-# Intercept 'click-ref' subcommand — animated cursor + click by snapshot ref
-if [ "$1" = "click-ref" ]; then
+# Intercept 'click' — ref name, #N, or pixel coordinates (x y)
+if [ "$1" = "click" ]; then
   shift
-  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" click "$1" "${BU_FLAGS[@]}" "${@:2}"
+  ARG="$1"
+  # Two numeric args = pixel coordinates → pass through to upstream
+  if [[ "$ARG" =~ ^[0-9]+$ ]] && [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+    exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" click "$ARG" "${@:2}"
+  fi
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" click "$ARG" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
-# Intercept 'hover-ref' subcommand — animated cursor + hover by snapshot ref
-if [ "$1" = "hover-ref" ]; then
+# Intercept 'hover' — ref name or #N
+if [ "$1" = "hover" ]; then
   shift
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" hover "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
-# Intercept 'scroll-to-ref' subcommand — animated cursor + scroll to snapshot ref
-if [ "$1" = "scroll-to-ref" ]; then
+# Intercept 'scroll-to' — ref name or #N
+if [ "$1" = "scroll-to" ]; then
   shift
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" scroll "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
