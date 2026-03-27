@@ -68,28 +68,34 @@ if [ "$1" = "clear-highlights" ]; then
   exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" "$@" eval "document.querySelectorAll('[data-bu-highlight]').forEach(e=>e.remove());'cleared'"
 fi
 
-# Helper: find element by snapshot ref (name > id), matching getRef() logic in snapshot.py
-_find_by_ref='(function(ref){var e=document.querySelector("[name=\""+ref+"\"]")||document.getElementById(ref);if(!e){var as=document.querySelectorAll("a[href]");for(var i=0;i<as.length;i++){try{var u=new URL(as[i].href);var p=u.pathname.replace(/\/+$/,"").split("/").pop();if(p===ref){e=as[i];break}}catch(x){}}};return e})'
+# Intercept 'cursor' subcommand — show/hide AI cursor
+if [ "$1" = "cursor" ]; then
+  shift
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" "$1" "${BU_FLAGS[@]}" "${@:2}"
+fi
 
-# Intercept 'click-ref' subcommand — click element by snapshot ref
+# Intercept 'click-ref' subcommand — animated cursor + click by snapshot ref
 if [ "$1" = "click-ref" ]; then
   shift
-  REF="$1"; shift
-  exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" "$@" eval "(function(){var el=${_find_by_ref}('${REF}');if(!el)return 'ERROR: no element found for ref=${REF}';el.scrollIntoView({block:'center'});el.focus();el.click();el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));return 'clicked: '+el.tagName.toLowerCase()+'[ref=${REF}]'})()"
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" click "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
-# Intercept 'hover-ref' subcommand — hover element by snapshot ref
+# Intercept 'hover-ref' subcommand — animated cursor + hover by snapshot ref
 if [ "$1" = "hover-ref" ]; then
   shift
-  REF="$1"; shift
-  exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" "$@" eval "(function(){var el=${_find_by_ref}('${REF}');if(!el)return 'ERROR: no element found for ref=${REF}';el.scrollIntoView({block:'center'});el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));return 'hovered: '+el.tagName.toLowerCase()+'[ref=${REF}]'})()"
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" hover "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
-# Intercept 'scroll-to-ref' subcommand — scroll element into view by snapshot ref
+# Intercept 'scroll-to-ref' subcommand — animated cursor + scroll to snapshot ref
 if [ "$1" = "scroll-to-ref" ]; then
   shift
-  REF="$1"; shift
-  exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" "$@" eval "(function(){var el=${_find_by_ref}('${REF}');if(!el)return 'ERROR: no element found for ref=${REF}';el.scrollIntoView({behavior:'smooth',block:'center'});return 'scrolled to: '+el.tagName.toLowerCase()+'[ref=${REF}]'})()"
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" scroll "$1" "${BU_FLAGS[@]}" "${@:2}"
+fi
+
+# Intercept 'cursor-fill' subcommand — animated cursor + batch fill (slower but visual)
+if [ "$1" = "cursor-fill" ]; then
+  shift
+  exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" fill "$@"
 fi
 
 exec uv run --directory "$SKILL_DIR" browser-use "${BU_FLAGS[@]}" "$@"
