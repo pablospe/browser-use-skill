@@ -14,7 +14,15 @@ SKILL_DIR = Path(__file__).parent
 
 # JS: inject cursor element + helpers (idempotent — safe to call repeatedly)
 CURSOR_INIT_JS = r"""
-if (!window.__buCursor) {
+if (!window.__buCursor || !window.__buCursor.moveToEl) {
+  // Remove old cursor if upgrading
+  if (window.__buCursor) {
+    var old = document.getElementById('__bu-cursor-dot');
+    if (old) old.remove();
+    old = document.getElementById('__bu-cursor-trail');
+    if (old) old.remove();
+    window.__buCursor = null;
+  }
   // Cursor dot
   const dot = document.createElement('div');
   dot.id = '__bu-cursor-dot';
@@ -42,9 +50,36 @@ if (!window.__buCursor) {
   `;
   document.body.appendChild(trail);
 
+  let scrollTimer;
+  const onScroll = () => {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => {
+      const c = window.__buCursor;
+      if (!c._targetEl || dot.style.opacity === '0') return;
+      const r = c._targetEl.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+      const cx = r.left + r.width/2;
+      const cy = r.top + r.height/2;
+      dot.style.left = cx + 'px';
+      dot.style.top = cy + 'px';
+      trail.style.left = cx + 'px';
+      trail.style.top = cy + 'px';
+    }, 50);
+  };
+  window.addEventListener('scroll', onScroll, true);
+
   window.__buCursor = {
     dot: dot,
     trail: trail,
+    _targetEl: null,
+
+    moveToEl: function(el) {
+      this._targetEl = el;
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width/2;
+      const cy = r.top + r.height/2;
+      return this.moveTo(cx, cy);
+    },
 
     moveTo: function(x, y) {
       return new Promise(resolve => {
@@ -124,8 +159,8 @@ ACTION_TEMPLATES = {
   var cx = r.left + r.width/2;
   var cy = r.top + r.height/2;
 
-  // Animate cursor to target (visual only — CSS transition handles movement)
-  window.__buCursor.moveTo(cx, cy);
+  // Animate cursor to target (tracks element for scroll repositioning)
+  window.__buCursor.moveToEl(el);
 
   // Click after animation delay
   setTimeout(function() {
@@ -152,11 +187,12 @@ ACTION_TEMPLATES = {
   var cx = r.left + r.width/2;
   var cy = r.top + r.height/2;
 
-  window.__buCursor.moveTo(cx, cy);
+  window.__buCursor.moveToEl(el);
 
   setTimeout(function() {
-    el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:cx, clientY:cy}));
-    el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true, clientX:cx, clientY:cy}));
+    var r2 = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:r2.left+r2.width/2, clientY:r2.top+r2.height/2}));
+    el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true, clientX:r2.left+r2.width/2, clientY:r2.top+r2.height/2}));
   }, 450);
 
   return 'hovered: ' + el.tagName.toLowerCase() + '[ref=%REF%]';
@@ -172,10 +208,9 @@ ACTION_TEMPLATES = {
 
   el.scrollIntoView({behavior:'smooth', block:'center'});
 
-  // Cursor follows after scroll settles
+  // Cursor follows after scroll settles (tracks element for scroll repositioning)
   setTimeout(function() {
-    var r = el.getBoundingClientRect();
-    window.__buCursor.moveTo(r.left + r.width/2, r.top + r.height/2);
+    window.__buCursor.moveToEl(el);
   }, 300);
 
   return 'scrolled to: ' + el.tagName.toLowerCase() + '[ref=%REF%]';
@@ -201,13 +236,11 @@ ACTION_TEMPLATES = {
     el.scrollIntoView({block:'center'});
 
     setTimeout(function() {
-      var r = el.getBoundingClientRect();
-      var cx = r.left + r.width/2;
-      var cy = r.top + r.height/2;
-      window.__buCursor.moveTo(cx, cy);
+      window.__buCursor.moveToEl(el);
 
       setTimeout(function() {
-        window.__buCursor.ripple(cx, cy);
+        var r2 = el.getBoundingClientRect();
+        window.__buCursor.ripple(r2.left+r2.width/2, r2.top+r2.height/2);
 
         if (typeof value === 'object' && value.select) {
           var opts = el.options;
