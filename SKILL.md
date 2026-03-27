@@ -65,6 +65,7 @@ bu click <index>                 # Click element by index
 bu click <x> <y>                 # Click at pixel coordinates
 bu type "text"                   # Type into focused element
 bu input <index> "text"          # Click element, then type
+bu fill '<json>'                 # Batch fill fields from JSON (see below)
 bu keys "Enter"                  # Send keyboard keys (also "Control+a", etc.)
 bu select <index> "option"       # Select dropdown option
 bu upload <index> <path>         # Upload file to file input
@@ -213,6 +214,19 @@ Snapshot output format (structured YAML, labels attached to fields):
 ```
 
 Pass extra flags before `snapshot` to forward to browser-use (e.g. `bu --connect snapshot`).
+
+## Batch Fill
+
+Fill multiple fields in one command instead of separate calls per field:
+
+```bash
+bu fill '{"62":"Schmidt","63":"Anna","61":{"select":"Mrs."},"75":{"check":true}}'
+```
+
+Value types:
+- `"text"` — fill/input text
+- `{"select": "option"}` — select dropdown option
+- `{"check": true}` — toggle checkbox
 
 ## Tips
 
