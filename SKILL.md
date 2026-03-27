@@ -58,6 +58,7 @@ bu close-tab [tab]               # Close tab (current if no index)
 # Page State — always run state first to get element indices
 bu state                         # URL, title, clickable elements with indices (inline output)
 bu snapshot                      # Structured YAML snapshot saved to .browser-use/*.yml
+bu snapshot --interactive        # Same but only form elements (no links/nav)
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
 
 # Interactions — use indices from state

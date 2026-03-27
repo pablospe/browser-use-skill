@@ -97,7 +97,7 @@ INTERACTIVE_ROLES = {"textbox", "combobox", "checkbox", "radio", "button", "file
 SKIP_TAGS = {"div", "span", "li", "label", "img"}
 
 
-def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None) -> list[str]:
+def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None, *, interactive_only: bool = False) -> list[str]:
     """Convert browser-use state text into structured YAML lines."""
     lines = raw_text.split("\n")
     yaml_lines = []
@@ -134,6 +134,10 @@ def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None) ->
 
                 # Skip non-interactive, non-link noise elements
                 if role in SKIP_TAGS:
+                    continue
+
+                # In interactive mode, skip links and other non-form elements
+                if interactive_only and role not in INTERACTIVE_ROLES:
                     continue
 
                 # Use preceding text as label
@@ -182,7 +186,13 @@ def build_snapshot(raw_text: str, field_values: dict[str, str] | None = None) ->
 
 def main():
     # Get extra args to pass to browser-use (e.g. --connect, --session)
-    extra_args = sys.argv[1:]
+    interactive_only = False
+    extra_args = []
+    for arg in sys.argv[1:]:
+        if arg in ("--interactive", "-i"):
+            interactive_only = True
+        else:
+            extra_args.append(arg)
 
     # Run browser-use --json state
     cmd = ["uv", "run", "--directory", str(SKILL_DIR), "browser-use", "--json"] + extra_args + ["state"]
@@ -225,7 +235,7 @@ def main():
             field_values = parsed.get("values", {})
 
     # Build YAML
-    yaml_lines = build_snapshot(raw_text, field_values)
+    yaml_lines = build_snapshot(raw_text, field_values, interactive_only=interactive_only)
 
     # Prepend URL
     if url:
