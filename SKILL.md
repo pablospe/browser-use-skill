@@ -99,6 +99,8 @@ bu snapshot --highlight          # Color-coded overlays with numbered clickable 
 bu snapshot --forms --highlight  # Form-only + highlights
 bu snapshot --tree               # Nested DOM hierarchy (shows parent-child structure)
 bu snapshot --tree --highlight   # Tree mode + highlights
+bu snapshot --aria               # Accessibility tree via CDP (roles, names, values)
+bu snapshot --aria --cdp-port 9222  # Aria mode with explicit CDP port
 bu screenshot [path.png]         # Screenshot (base64 if no path, --full for full page)
 
 # Highlight Interaction
@@ -108,17 +110,30 @@ bu clear-highlights              # Remove all highlight overlays from page
 # Form Fill — single JS eval, uses name-based refs from snapshot
 bu fill '<json>'                 # Batch fill (see Batch Fill section below)
 
-# Interactions — use numeric indices from bu state
-bu click <index>                 # Click element by index
+# Interactions — ref-based (from snapshot) or index-based (from bu state)
+bu click <ref>                   # Click by ref name (e.g. "your-surname")
+bu click <#N>                    # Click by snapshot number (e.g. "#5")
 bu click <x> <y>                 # Click at pixel coordinates
+bu hover <ref>                   # Hover via CDP (triggers real CSS :hover for dropdown menus)
+bu hover <#N>                    # Hover by snapshot number
+bu scroll-to <ref>               # Scroll to element by ref name
+bu scroll-to <#N>                # Scroll to element by snapshot number
 bu type "text"                   # Type into focused element
-bu input <index> "text"          # Click element, then type
+bu input <index> "text"          # Click element by index, then type
 bu keys "Enter"                  # Send keyboard keys (also "Control+a", etc.)
 bu select <index> "option"       # Select dropdown option
 bu upload <index> <path>         # Upload file to file input
-bu hover <index>                 # Hover over element
 bu dblclick <index>              # Double-click element
 bu rightclick <index>            # Right-click element
+
+# AI Cursor — visible red dot that moves to elements
+bu cursor show                   # Show cursor dot
+bu cursor hide                   # Hide cursor dot
+bu cursor-fill '<json>'          # Animated cursor: moves to each field before filling
+
+# Snapshot Comparison
+bu diff                          # Compare two most recent snapshots
+bu diff <old.yml> <new.yml>      # Compare specific snapshot files
 
 # Data Extraction
 bu eval "js code"                # Execute JavaScript, return result
@@ -174,9 +189,10 @@ bu snapshot --highlight          # Color-coded overlays with numbered clickable 
 bu snapshot --forms --highlight  # Both
 bu snapshot --tree               # Nested DOM hierarchy (parent-child structure)
 bu snapshot --tree --highlight   # Tree + highlights
+bu snapshot --aria               # Accessibility tree via CDP
 ```
 
-Flags: `--forms` / `-f`, `--highlight` / `-h`, `--tree` / `-t`.
+Flags: `--forms` / `-f`, `--highlight` / `-h`, `--tree` / `-t`, `--aria` / `-a`.
 
 ### Output format
 
@@ -273,8 +289,9 @@ bu fill '{"your-surname":"Smith","your-email":"a@b.com","salutation":{"select":"
 | Value | Action | Example |
 |---|---|---|
 | `"text"` | Fill text input/textarea | `"your-surname":"Smith"` |
-| `{"select":"opt"}` | Select dropdown option by visible text | `"salutation":{"select":"Mrs."}` |
-| `{"check":true}` | Set checkbox/radio checked state | `"consent":{"check":true}` |
+| `{"select":"opt"}` | Select dropdown option by text or value | `"salutation":{"select":"Mrs."}` |
+| `{"select":"val"}` | Select radio button by value | `"size":{"select":"medium"}` |
+| `{"check":true}` | Set checkbox checked state | `"consent":{"check":true}` |
 
 ### How it works
 
@@ -282,6 +299,77 @@ bu fill '{"your-surname":"Smith","your-email":"a@b.com","salutation":{"select":"
 - Dispatches proper `input` and `change` events for framework compatibility (React, Vue, etc.)
 - Uses the correct prototype setter (`HTMLInputElement` vs `HTMLTextAreaElement`) to trigger React's synthetic events
 - Reports `filled: N/M` with error details for any failures
+
+## Click, Hover, and Scroll by Ref
+
+Use ref names or `#N` numbers from snapshots to interact with elements:
+
+```bash
+bu click custname                # Click by ref name
+bu click '#5'                    # Click by snapshot number
+bu click 400 300                 # Click at pixel coordinates (x y)
+bu hover range-of-treatment      # Hover — triggers CSS :hover (dropdown menus)
+bu hover '#3'                    # Hover by number
+bu scroll-to custtel             # Scroll to element
+bu scroll-to '#12'               # Scroll to element by number
+```
+
+### CDP-powered hover
+
+`bu hover` uses Chrome DevTools Protocol to trigger **real CSS `:hover`** states, not just JavaScript events. This means dropdown menus, tooltips, and other CSS `:hover` effects actually work. The implementation:
+
+1. **JS `mouseover`/`mouseenter`** — dispatched as fallback for JS event handlers
+2. **`Input.dispatchMouseEvent`** — real browser cursor movement via CDP
+3. **`CSS.forcePseudoState`** — forces `:hover` on the element and its parent (reliable for CSS dropdown menus)
+
+Output shows the method used: `hovered (CDP): a[ref=foo]` vs `hovered (JS-only): a[ref=foo]`.
+
+### CDP-powered click
+
+`bu click <ref>` also dispatches real CDP `mousePressed`/`mouseReleased` events in addition to JS `.click()`, ensuring native click handlers work.
+
+## AI Cursor
+
+A visual red glowing dot that moves to elements, showing where the AI is acting:
+
+```bash
+bu cursor show                   # Show the cursor dot
+bu cursor hide                   # Hide the cursor dot
+bu click custname                # Cursor moves to element, shows click ripple
+bu hover about-us                # Cursor moves to element
+bu cursor-fill '{"custname":"John","custemail":"j@test.com"}'  # Animated fill
+```
+
+The cursor persists across commands (stored in `window.__buCursor`) and repositions on scroll.
+
+## Diff Snapshots
+
+Compare two snapshots to see what changed:
+
+```bash
+bu diff                          # Compare two most recent snapshots
+bu diff old.yml new.yml          # Compare specific files
+```
+
+Output shows added (`+`), removed (`-`), and changed (`~`) elements:
+
+```
+~ [custname] value: "" → "John Smith"
+~ [topping] checked: false → true
++ [new-field] textbox "New Field"
+- [removed-field] button "Old Button"
+```
+
+## Accessibility Tree (--aria)
+
+The `--aria` flag uses CDP `Accessibility.getFullAXTree` to get the browser's accessibility tree instead of scanning the DOM:
+
+```bash
+bu snapshot --aria               # Auto-detect CDP port
+bu snapshot --aria --cdp-port 9222  # Explicit CDP port
+```
+
+This provides semantic roles, computed names, and states as the browser sees them — useful for accessibility testing and when DOM scanning misses ARIA attributes.
 
 ## Cloud API
 
@@ -375,10 +463,13 @@ bu open https://abc.trycloudflare.com
 4. **Use `--forms` for form pages** — filters to form elements only, keeps output small
 5. **Use `--tree` for structural context** — shows nested DOM hierarchy
 6. **Use `bu selected` for interactive workflows** — let users click to select elements
-7. **Use `--headed` for debugging** to see what the browser is doing
-8. **New tabs via eval** — `bu open` navigates the current tab; use `bu eval "window.open('url', '_blank')"` then `bu switch N`
-9. **Sessions persist** — browser stays open between commands
-10. **`eval` with JS** is the most powerful extraction method for complex pages
+7. **Use `bu hover` for dropdown menus** — CDP-powered hover triggers real CSS `:hover`
+8. **Use `bu click <ref>` or `bu click '#N'`** — click by ref name or snapshot number
+9. **Use `bu diff` to track changes** — compare before/after snapshots
+10. **Use `--headed` for debugging** to see what the browser is doing
+11. **New tabs via eval** — `bu open` navigates the current tab; use `bu eval "window.open('url', '_blank')"` then `bu switch N`
+12. **Sessions persist** — browser stays open between commands
+13. **`eval` with JS** is the most powerful extraction method for complex pages
 
 ## Troubleshooting
 
