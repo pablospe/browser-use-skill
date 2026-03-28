@@ -86,7 +86,9 @@ SCAN_JS = r"""
         if (path && path.length < 50) return path;
       } catch {}
     }
-    return `_idx${idx}`;
+    const fallback = `_idx${idx}`;
+    el.setAttribute('data-bu-ref', fallback);
+    return fallback;
   };
 
   // Selector for all interesting elements
@@ -335,7 +337,9 @@ TREE_JS = r"""
         if (p && p.length < 50) return p;
       } catch {}
     }
-    return `_idx${idx}`;
+    const fallback = `_idx${idx}`;
+    el.setAttribute('data-bu-ref', fallback);
+    return fallback;
   };
 
   const hlColors = {

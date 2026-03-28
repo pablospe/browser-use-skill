@@ -131,7 +131,7 @@ if (!window.__buCursor || !window.__buCursor.moveToEl) {
 # JS: find element by ref (same logic as bu.sh _find_by_ref)
 FIND_BY_REF_JS = r"""
 function __buFindRef(ref) {
-  var e = document.querySelector('[name="' + ref + '"]') || document.getElementById(ref);
+  var e = document.querySelector('[data-bu-ref="' + ref + '"]') || document.querySelector('[name="' + ref + '"]') || document.getElementById(ref);
   if (!e) {
     var as = document.querySelectorAll('a[href]');
     for (var i = 0; i < as.length; i++) {
