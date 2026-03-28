@@ -71,15 +71,32 @@ FILL_JS = r"""
         el.dispatchEvent(new Event('change', {bubbles: true}));
         filled++;
       } else if (action.select !== undefined) {
-        // Select dropdown by visible text
-        const opts = Array.from(el.options);
-        const opt = opts.find(o => o.text === action.select);
-        if (opt) {
-          el.value = opt.value;
-          el.dispatchEvent(new Event('change', {bubbles: true}));
-          filled++;
+        // Select dropdown by visible text, or radio group by value
+        if (el.tagName === 'SELECT') {
+          const opts = Array.from(el.options);
+          const opt = opts.find(o => o.text === action.select || o.value === action.select);
+          if (opt) {
+            el.value = opt.value;
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            filled++;
+          } else {
+            errors.push(name + ': option "' + action.select + '" not found');
+          }
+        } else if (el.type === 'radio') {
+          // Find radio button in the same group with matching value
+          const radios = document.querySelectorAll('input[type="radio"][name="' + name + '"]');
+          let found = false;
+          radios.forEach(r => {
+            if (r.value === action.select) {
+              r.checked = true;
+              r.dispatchEvent(new Event('change', {bubbles: true}));
+              found = true;
+            }
+          });
+          if (found) filled++;
+          else errors.push(name + ': radio value "' + action.select + '" not found');
         } else {
-          errors.push(name + ': option "' + action.select + '" not found');
+          errors.push(name + ': select not supported on ' + el.tagName + '[type=' + el.type + ']');
         }
       } else if (action.check !== undefined) {
         el.checked = !!action.check;

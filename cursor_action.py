@@ -246,11 +246,16 @@ ACTION_TEMPLATES = {
         window.__buCursor.ripple(r2.left+r2.width/2, r2.top+r2.height/2);
 
         if (typeof value === 'object' && value.select) {
-          var opts = el.options;
-          for (var j = 0; j < opts.length; j++) {
-            if (opts[j].text === value.select || opts[j].value === value.select) {
-              el.selectedIndex = j; break;
+          if (el.tagName === 'SELECT') {
+            var opts = el.options;
+            for (var j = 0; j < opts.length; j++) {
+              if (opts[j].text === value.select || opts[j].value === value.select) {
+                el.selectedIndex = j; break;
+              }
             }
+          } else if (el.type === 'radio') {
+            var radios = document.querySelectorAll('input[type="radio"][name="' + name + '"]');
+            radios.forEach(function(r) { if (r.value === value.select) r.checked = true; });
           }
           el.dispatchEvent(new Event('change', {bubbles:true}));
         } else if (typeof value === 'object' && 'check' in value) {

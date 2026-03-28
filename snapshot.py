@@ -532,12 +532,25 @@ _STRUCTURAL_ROLES = {
 
 
 def _detect_cdp_port() -> str | None:
-    """Detect the Chrome remote-debugging-port from the process list."""
+    """Detect the Chrome remote-debugging-port from process list or /proc."""
+    # Try ps first
     try:
         ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
         m = re.search(r"remote-debugging-port=(\d+)", ps.stdout)
         if m:
             return m.group(1)
+    except Exception:
+        pass
+    # Fallback: scan /proc cmdlines (works in minimal containers without ps)
+    try:
+        for cmdline in Path("/proc").glob("*/cmdline"):
+            try:
+                data = cmdline.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+                m = re.search(r"remote-debugging-port=(\d+)", data)
+                if m:
+                    return m.group(1)
+            except (OSError, PermissionError):
+                continue
     except Exception:
         pass
     return None
