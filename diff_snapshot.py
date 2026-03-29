@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Compare two snapshot files and show what changed between page states."""
 
+import os
 import re
 import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
-SNAPSHOT_DIR = SKILL_DIR / ".browser-use"
+SNAPSHOT_DIR = Path(os.environ.get("BU_CALLER_CWD", str(SKILL_DIR))) / ".browser-use"
 
 
 def parse_snapshot(filepath: Path) -> dict[str, dict]:

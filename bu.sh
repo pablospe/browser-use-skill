@@ -6,6 +6,7 @@
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONUTF8=1
+export BU_CALLER_CWD="$PWD"
 
 # Collect leading flags (--connect, --headed, etc.) before the subcommand
 BU_FLAGS=()

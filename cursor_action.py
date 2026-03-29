@@ -6,6 +6,7 @@ elements. Shows a click ripple on click actions. Persists across calls.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -478,7 +479,7 @@ def resolve_ref(ref: str) -> str:
         return ref
     num = int(ref.lstrip("#"))
     # Find the latest snapshot
-    snapshot_dir = SKILL_DIR / ".browser-use"
+    snapshot_dir = Path(os.environ.get("BU_CALLER_CWD", str(SKILL_DIR))) / ".browser-use"
     if not snapshot_dir.exists():
         return ref
     files = sorted(snapshot_dir.glob("page-*.yml"))

@@ -6,6 +6,7 @@ instead of DOM walking, giving the same rich accessibility tree that devtools ex
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
-SNAPSHOT_DIR = SKILL_DIR / ".browser-use"
+SNAPSHOT_DIR = Path(os.environ.get("BU_CALLER_CWD", str(SKILL_DIR))) / ".browser-use"
 
 # JS that scans the entire DOM for all interactive and structural elements.
 # Returns JSON with url, title, elements[].
