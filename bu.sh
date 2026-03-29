@@ -98,6 +98,30 @@ if [ "$1" = "scroll-to" ]; then
   exec uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" scroll "$1" "${BU_FLAGS[@]}" "${@:2}"
 fi
 
+# Intercept 'autocomplete' subcommand — click ref, type text, click first option
+# Works with React Select, Select2, and similar typeahead widgets
+if [ "$1" = "autocomplete" ]; then
+  shift
+  REF="$1"
+  VALUE="$2"
+  WAIT="${3:-0.5}"
+  if [ -z "$REF" ] || [ -z "$VALUE" ]; then
+    echo 'Usage: bu autocomplete <ref|#N> "value" [wait_secs]' >&2
+    exit 1
+  fi
+  BU="uv run --directory $SKILL_DIR browser-use ${BU_FLAGS[*]}"
+  # 1. Click to focus the input
+  uv run --directory "$SKILL_DIR" python "$SKILL_DIR/cursor_action.py" click "$REF" "${BU_FLAGS[@]}" >/dev/null 2>&1
+  # 2. Type the search text (real keystrokes)
+  $BU type "$VALUE" >/dev/null 2>&1
+  # 3. Wait for dropdown to render
+  sleep "$WAIT"
+  # 4. Select the first option via Tab (avoids Enter which can submit forms)
+  $BU keys "Tab" >/dev/null 2>&1
+  echo "autocomplete ${REF}: ${VALUE}"
+  exit 0
+fi
+
 # Intercept 'cursor-fill' subcommand — animated cursor + batch fill (slower but visual)
 if [ "$1" = "cursor-fill" ]; then
   shift
