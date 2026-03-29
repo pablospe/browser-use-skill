@@ -23,11 +23,12 @@ FILL_JS = r"""
   let filled = 0;
   const errors = [];
 
-  // Find element by name, searching main document, same-origin iframes, and shadow DOM
+  // Find element by name or id, searching main document, same-origin iframes, and shadow DOM
   const findEl = (name) => {
     // Search a root (document or shadowRoot) and its shadow children
     const searchRoot = (root) => {
-      const el = root.querySelector(`[name="${name}"]`);
+      // Try name attribute first, then id
+      const el = root.querySelector(`[name="${name}"]`) || root.querySelector(`#${CSS.escape(name)}`);
       if (el) return el;
       // Check shadow DOMs
       const allEls = root.querySelectorAll('*');
