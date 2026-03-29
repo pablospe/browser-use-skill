@@ -39,15 +39,20 @@ bu snapshot --forms --highlight  # + color-coded overlays with numbered badges
 #   - combobox "Salutation" #0 [salutation] [value="Mr."]
 #   - textbox "Surname *" #1 [your-surname] [required]
 #   - checkbox "Consent" #2 [acceptance] [checked]
+#   - combobox "Country" #3 [react-select-1-input]    ← autocomplete widget
 
-# 4. Batch fill — single JS eval, all fields at once
+# 4. Batch fill standard fields — single JS eval, all at once
 bu fill '{"your-surname":"Smith","salutation":{"select":"Mrs."},"acceptance":{"check":true}}'
 
-# 5. Verify
+# 5. Autocomplete widgets — real keystrokes + option click
+bu autocomplete '#3' "Germany"
+
+# 6. Verify
 bu snapshot --forms
 ```
 
-**Total: 2 shell calls** to discover + fill a form (vs 16+ with individual commands).
+**Standard fields**: use `bu fill` (one call for all text, checkbox, radio, native select).
+**Autocomplete/typeahead widgets**: use `bu autocomplete` (React Select, Select2, MUI, etc.).
 
 ### User selection workflow
 
@@ -107,8 +112,9 @@ bu screenshot [path.png]         # Screenshot (base64 if no path, --full for ful
 bu selected                      # Read user-selected elements (click badges to select)
 bu clear-highlights              # Remove all highlight overlays from page
 
-# Form Fill — single JS eval, uses name-based refs from snapshot
+# Form Fill — single JS eval, uses name/id refs from snapshot
 bu fill '<json>'                 # Batch fill (see Batch Fill section below)
+bu autocomplete <ref> "value"    # Typeahead/autocomplete widgets (see Autocomplete section)
 
 # Interactions — ref-based (from snapshot) or index-based (from bu state)
 bu click <ref>                   # Click by ref name (e.g. "your-surname")
@@ -295,10 +301,59 @@ bu fill '{"your-surname":"Smith","your-email":"a@b.com","salutation":{"select":"
 
 ### How it works
 
-- Uses `document.querySelector('[name="..."]')` to find elements — works on all elements regardless of viewport
+- Finds elements by `name` attribute first, falls back to `id` — works with most forms
+- Works on all elements regardless of viewport position
 - Dispatches proper `input` and `change` events for framework compatibility (React, Vue, etc.)
 - Uses the correct prototype setter (`HTMLInputElement` vs `HTMLTextAreaElement`) to trigger React's synthetic events
 - Reports `filled: N/M` with error details for any failures
+- **Does not handle autocomplete/typeahead widgets** — use `bu autocomplete` for those
+
+## Autocomplete
+
+Handles typeahead/autocomplete widgets (React Select, Select2, MUI Autocomplete, Headless UI, etc.) that need real keystrokes to trigger a dropdown.
+
+```bash
+bu autocomplete <ref|#N> "value"          # Type and select matching option
+bu autocomplete <ref|#N> "value" --wait 5 # Custom timeout (default: 3s)
+```
+
+### How it works
+
+1. **Clicks** the input to focus it
+2. **Clears** any existing text (Ctrl+A + Backspace)
+3. **Types** real keystrokes to trigger the dropdown
+4. **Polls** for a matching option using multiple CSS selectors
+5. **Clicks** the matched option via JS
+6. **Verifies** the dropdown closed; sends Escape if not
+7. **Falls back** to Tab if no option found (selects highlighted item)
+
+### Supported widgets
+
+Polls 10 CSS selectors covering most autocomplete libraries:
+
+| Selector | Widget |
+|----------|--------|
+| `[role="option"]` | React Select, MUI, Headless UI, Radix |
+| `[role="listbox"] > *` | ARIA listbox pattern |
+| `[class*="option"]` | React Select CSS modules |
+| `.select2-results__option` | Select2 |
+| `[class*="menu"] [class*="item"]` | Generic menu items |
+| `li[class*="result"]` | jQuery UI autocomplete |
+| `.dropdown-item` | Bootstrap |
+
+### Why not `bu keys "Enter"`?
+
+**Enter often submits the form** when used inside autocomplete fields. The autocomplete command avoids this by clicking the option via JS or falling back to Tab. Never use `bu keys "Enter"` to select autocomplete options inside forms.
+
+### Example
+
+```bash
+bu snapshot --forms
+# Shows: combobox "Select State" #14 [react-select-3-input]
+
+bu autocomplete '#14' "NCR"
+# autocomplete #14: NCR
+```
 
 ## Click, Hover, and Scroll by Ref
 
@@ -391,7 +446,8 @@ bu cloud v2 poll <task-id>       # Poll task until done
 bu --headed open https://example.com/form
 bu snapshot --forms --highlight
 # read .browser-use/page-*.yml
-bu fill '{"field1":"value1","field2":"value2","dropdown":{"select":"Option"}}'
+bu fill '{"field1":"value1","field2":"value2","dropdown":{"select":"Option"},"checkbox1":{"check":true}}'
+bu autocomplete '#5' "Search term"   # for any typeahead/autocomplete widgets
 bu snapshot --forms  # verify
 ```
 
@@ -470,6 +526,7 @@ bu open https://abc.trycloudflare.com
 11. **New tabs via eval** — `bu open` navigates the current tab; use `bu eval "window.open('url', '_blank')"` then `bu switch N`
 12. **Sessions persist** — browser stays open between commands
 13. **`eval` with JS** is the most powerful extraction method for complex pages
+14. **Use `bu autocomplete` for typeahead widgets** — React Select, Select2, MUI, etc. Never use `bu keys "Enter"` to select autocomplete options inside forms (it submits the form)
 
 ## Troubleshooting
 
