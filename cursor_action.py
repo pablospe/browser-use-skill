@@ -131,8 +131,22 @@ if (!window.__buCursor || !window.__buCursor.moveToEl) {
 
 # JS: find element by ref (same logic as bu.sh _find_by_ref)
 FIND_BY_REF_JS = r"""
-function __buFindRef(ref) {
-  var e = document.querySelector('[data-bu-ref="' + ref + '"]') || document.querySelector('[name="' + ref + '"]') || document.getElementById(ref);
+function __buFindRef(ref, refIdx) {
+  // Escape ref for CSS attribute value selectors (handle " and \ chars)
+  var cssVal = ref.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  var e;
+  if (typeof refIdx === 'number') {
+    // Multiple elements share this ref — use querySelectorAll with index
+    var byRef = document.querySelectorAll('[data-bu-ref="' + cssVal + '"]');
+    if (byRef.length > refIdx) { e = byRef[refIdx]; }
+    else {
+      var byName = document.querySelectorAll('[name="' + cssVal + '"]');
+      if (byName.length > refIdx) { e = byName[refIdx]; }
+    }
+  }
+  if (!e) {
+    e = document.querySelector('[data-bu-ref="' + cssVal + '"]') || document.querySelector('[name="' + cssVal + '"]') || document.getElementById(ref);
+  }
   if (!e) {
     var as = document.querySelectorAll('a[href]');
     for (var i = 0; i < as.length; i++) {
@@ -153,7 +167,7 @@ ACTION_TEMPLATES = {
   %CURSOR_INIT%
   %FIND_BY_REF%
 
-  var el = __buFindRef('%REF%');
+  var el = __buFindRef('%REF%', %REF_IDX%);
   if (!el) return JSON.stringify({error: 'no element found for ref=%REF%'});
 
   el.scrollIntoView({block:'center'});
@@ -165,12 +179,17 @@ ACTION_TEMPLATES = {
   // Animate cursor to target (tracks element for scroll repositioning)
   window.__buCursor.moveToEl(el);
 
-  // Click after brief delay (JS fallback)
+  // Click after brief delay — dispatch full mouse event sequence for framework compat
   setTimeout(function() {
     window.__buCursor.ripple(cx, cy);
     el.focus();
+    var evtOpts = {bubbles:true, cancelable:true, clientX:cx, clientY:cy, view:window};
+    el.dispatchEvent(new PointerEvent('pointerdown', evtOpts));
+    el.dispatchEvent(new MouseEvent('mousedown', evtOpts));
+    el.dispatchEvent(new PointerEvent('pointerup', evtOpts));
+    el.dispatchEvent(new MouseEvent('mouseup', evtOpts));
     el.click();
-    el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:cx, clientY:cy}));
+    el.dispatchEvent(new MouseEvent('click', evtOpts));
   }, 100);
 
   return JSON.stringify({ok: true, tag: el.tagName.toLowerCase(), ref: '%REF%', x: cx, y: cy});
@@ -181,7 +200,7 @@ ACTION_TEMPLATES = {
   %CURSOR_INIT%
   %FIND_BY_REF%
 
-  var el = __buFindRef('%REF%');
+  var el = __buFindRef('%REF%', %REF_IDX%);
   if (!el) return JSON.stringify({error: 'no element found for ref=%REF%'});
 
   el.scrollIntoView({block:'center'});
@@ -207,7 +226,7 @@ ACTION_TEMPLATES = {
   %CURSOR_INIT%
   %FIND_BY_REF%
 
-  var el = __buFindRef('%REF%');
+  var el = __buFindRef('%REF%', %REF_IDX%);
   if (!el) return 'ERROR: no element found for ref=%REF%';
 
   el.scrollIntoView({behavior:'smooth', block:'center'});
@@ -473,25 +492,87 @@ def _cdp_force_hover(ref: str) -> bool:
         return False
 
 
-def resolve_ref(ref: str) -> str:
-    """If ref is a number, look up the actual ref name from the latest snapshot."""
+def _extract_ref_from_line(line: str, num: int) -> str | None:
+    """Extract ref from a snapshot YAML line like '  - role "label" #N [ref] ...'"""
+    import re as _re
+    m = _re.search(r'#(\d+)\s+\[', line)
+    if m and int(m.group(1)) == num:
+        start = m.end()
+        depth = 1
+        pos = start
+        while pos < len(line) and depth > 0:
+            if line[pos] == '[':
+                depth += 1
+            elif line[pos] == ']':
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            return line[start:pos-1]
+    return None
+
+
+def _extract_all_refs(snapshot_path) -> list[tuple[int, str]]:
+    """Extract all (num, ref) pairs from a snapshot file."""
+    import re as _re
+    results = []
+    for line in snapshot_path.read_text().splitlines():
+        m = _re.search(r'#(\d+)\s+\[', line)
+        if not m:
+            continue
+        num = int(m.group(1))
+        start = m.end()
+        depth = 1
+        pos = start
+        while pos < len(line) and depth > 0:
+            if line[pos] == '[':
+                depth += 1
+            elif line[pos] == ']':
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            results.append((num, line[start:pos-1]))
+    return results
+
+
+def resolve_ref(ref: str) -> tuple[str, int | None]:
+    """If ref is a number, look up the actual ref name from the latest snapshot.
+
+    Returns (ref_name, index) where index is the 0-based occurrence of this ref
+    among elements sharing the same name (None if unique or not a #N ref).
+    """
     if not ref.lstrip("#").isdigit():
-        return ref
+        return ref, None
     num = int(ref.lstrip("#"))
     # Find the latest snapshot
     snapshot_dir = Path(os.environ.get("BU_CALLER_CWD", str(SKILL_DIR))) / ".browser-use"
     if not snapshot_dir.exists():
-        return ref
+        return ref, None
     files = sorted(snapshot_dir.glob("page-*.yml"))
     if not files:
-        return ref
-    import re as _re
-    for line in files[-1].read_text().splitlines():
-        m = _re.search(r'#(\d+)\s+\[([^\]]+)\]', line)
-        if m and int(m.group(1)) == num:
-            return m.group(2)
-    print(f"Warning: #{num} not found in latest snapshot, using as-is", file=sys.stderr)
-    return ref
+        return ref, None
+
+    all_refs = _extract_all_refs(files[-1])
+    target_ref = None
+    for n, r in all_refs:
+        if n == num:
+            target_ref = r
+            break
+
+    if target_ref is None:
+        print(f"Warning: #{num} not found in latest snapshot, using as-is", file=sys.stderr)
+        return ref, None
+
+    # Count how many elements before this one share the same ref name
+    idx = 0
+    for n, r in all_refs:
+        if n == num:
+            break
+        if r == target_ref:
+            idx += 1
+
+    # Check if this ref is unique (no duplicates)
+    count = sum(1 for _, r in all_refs if r == target_ref)
+    return target_ref, idx if count > 1 else None
 
 
 def main():
@@ -507,12 +588,15 @@ def main():
         if len(sys.argv) < 3:
             print(f"Usage: cursor_action.py {action} <ref>", file=sys.stderr)
             sys.exit(1)
-        ref = resolve_ref(sys.argv[2])
+        ref, ref_idx = resolve_ref(sys.argv[2])
         extra_args = sys.argv[3:]
         js = ACTION_TEMPLATES[action]
         js = js.replace("%CURSOR_INIT%", CURSOR_INIT_JS)
         js = js.replace("%FIND_BY_REF%", FIND_BY_REF_JS)
-        js = js.replace("%REF%", ref)
+        # Escape ref for safe JS string interpolation (handle \, ', and special chars)
+        escaped_ref = ref.replace("\\", "\\\\").replace("'", "\\'")
+        js = js.replace("%REF%", escaped_ref)
+        js = js.replace("%REF_IDX%", str(ref_idx) if ref_idx is not None else "undefined")
 
     elif action == "fill":
         if len(sys.argv) < 3:

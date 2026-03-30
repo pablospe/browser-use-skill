@@ -70,7 +70,7 @@ SCAN_JS = r"""
     if (/^H[1-6]$/.test(tag)) return 'heading';
     if (tag === 'NAV') return 'navigation';
     if (tag === 'INPUT') {
-      const map = {checkbox:'checkbox', radio:'radio', submit:'button', file:'file-input'};
+      const map = {checkbox:'checkbox', radio:'radio', submit:'button', file:'file-input', range:'slider', color:'color-input', date:'date-input', time:'time-input', 'datetime-local':'datetime-input'};
       return map[type] || 'textbox';
     }
     return tag.toLowerCase();
@@ -95,7 +95,7 @@ SCAN_JS = r"""
   // Selector for all interesting elements
   const selector = formsOnly
     ? 'input,select,textarea,button,[role="button"]'
-    : 'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],img[alt],h1,h2,h3,h4,h5,h6,nav,[role="navigation"],details,summary';
+    : 'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="gridcell"],[role="option"],[role="switch"],img[alt],h1,h2,h3,h4,h5,h6,nav,[role="navigation"],details,summary';
 
   const results = [];
   const hlPairs = [];
@@ -147,6 +147,10 @@ SCAN_JS = r"""
       if (v) entry.value = v;
     } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       if (el.value) entry.value = el.value;
+      if (el.type === 'range') {
+        entry.min = el.min || '0';
+        entry.max = el.max || '100';
+      }
     }
 
     // Link href
@@ -293,7 +297,7 @@ TREE_JS = r"""
       TABLE:'table', DETAILS:'details', SUMMARY:'summary', DIALOG:'dialog',
     };
     if (tag === 'INPUT') {
-      const im = {checkbox:'checkbox',radio:'radio',submit:'button',file:'file-input'};
+      const im = {checkbox:'checkbox',radio:'radio',submit:'button',file:'file-input',range:'slider',color:'color-input',date:'date-input',time:'time-input','datetime-local':'datetime-input'};
       return im[type] || 'textbox';
     }
     if (/^H[1-6]$/.test(tag)) return 'heading';
@@ -423,6 +427,10 @@ TREE_JS = r"""
         if (v) entry.value = v;
       } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
         if (child.value) entry.value = child.value;
+        if (child.type === 'range') {
+          entry.min = child.min || '0';
+          entry.max = child.max || '100';
+        }
       }
       if (tag === 'A' && child.href) entry.url = child.href;
       if (/^H[1-6]$/.test(tag)) entry.level = parseInt(tag[1]);
@@ -815,6 +823,8 @@ def format_element(el: dict) -> str:
         parts.append(" [checked]")
     if el.get("disabled"):
         parts.append(" [disabled]")
+    if el.get("min") is not None and el.get("max") is not None:
+        parts.append(f' [range={el["min"]}..{el["max"]}]')
     if el.get("value"):
         val = el["value"]
         if len(val) > 60:

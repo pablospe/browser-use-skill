@@ -6,9 +6,10 @@ Usage:
 
 Keys are element name attributes (stable refs from snapshot).
 Values are:
-  - string: set input/textarea value
-  - {"select": "option"}: select a dropdown option by visible text
+  - string or number: set input/textarea/range value
+  - {"select": "option"}: select a dropdown option by visible text, or radio by value
   - {"check": true/false}: set checkbox/radio checked state
+  - {"check": true, "index": N}: target the Nth element with the same name (0-based)
 """
 
 import json
@@ -24,12 +25,22 @@ FILL_JS = r"""
   const errors = [];
 
   // Find element by name or id, searching main document, same-origin iframes, and shadow DOM
-  const findEl = (name) => {
+  // Optional idx parameter selects the Nth element with that name (0-based)
+  const findEl = (name, idx) => {
+    // Escape name for CSS attribute value selectors (handle " and \ chars)
+    const cssVal = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     // Search a root (document or shadowRoot) and its shadow children
     const searchRoot = (root) => {
-      // Try name attribute first, then id
-      const el = root.querySelector(`[name="${name}"]`) || root.querySelector(`#${CSS.escape(name)}`);
-      if (el) return el;
+      if (typeof idx === 'number') {
+        // Return all matches so caller can pick by index
+        const els = root.querySelectorAll(`[name="${cssVal}"]`);
+        if (els.length > idx) return els[idx];
+        const byId = root.querySelectorAll(`#${CSS.escape(name)}`);
+        if (byId.length > idx) return byId[idx];
+      } else {
+        const el = root.querySelector(`[name="${cssVal}"]`) || root.querySelector(`#${CSS.escape(name)}`);
+        if (el) return el;
+      }
       // Check shadow DOMs
       const allEls = root.querySelectorAll('*');
       for (const candidate of allEls) {
@@ -56,18 +67,23 @@ FILL_JS = r"""
   };
 
   for (const [name, action] of Object.entries(fields)) {
-    const el = findEl(name);
+    // Support "index" property for same-name elements (e.g. {"check":true,"index":1})
+    const elIdx = (typeof action === 'object' && action !== null) ? action.index : undefined;
+    const el = findEl(name, elIdx);
     if (!el) { errors.push(name + ': not found'); continue; }
+    // Escape name for CSS attribute value selectors (used by radio group query)
+    const cssVal = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
     try {
-      if (typeof action === 'string') {
-        // Text input/textarea — use matching prototype setter for React compat
+      if (typeof action === 'string' || typeof action === 'number') {
+        // Text/number/range input or textarea — use matching prototype setter for React compat
+        const val = String(action);
         const proto = el.tagName === 'TEXTAREA'
           ? window.HTMLTextAreaElement.prototype
           : window.HTMLInputElement.prototype;
         const nativeSet = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-        if (nativeSet) nativeSet.call(el, action);
-        else el.value = action;
+        if (nativeSet) nativeSet.call(el, val);
+        else el.value = val;
         el.dispatchEvent(new Event('input', {bubbles: true}));
         el.dispatchEvent(new Event('change', {bubbles: true}));
         filled++;
@@ -84,11 +100,24 @@ FILL_JS = r"""
             errors.push(name + ': option "' + action.select + '" not found');
           }
         } else if (el.type === 'radio') {
-          // Find radio button in the same group with matching value
-          const radios = document.querySelectorAll('input[type="radio"][name="' + name + '"]');
+          // Find radio button in the same group with matching value or label text
+          const radios = document.querySelectorAll('input[type="radio"][name="' + cssVal + '"]');
           let found = false;
+          const target = action.select;
           radios.forEach(r => {
-            if (r.value === action.select) {
+            if (found) return;
+            // Match by value first
+            if (r.value === target) {
+              r.checked = true;
+              r.dispatchEvent(new Event('change', {bubbles: true}));
+              found = true;
+              return;
+            }
+            // Match by associated label text
+            const labelEl = r.id ? document.querySelector('label[for="' + r.id + '"]') : null;
+            const parentLabel = r.closest('label');
+            const labelText = (labelEl?.textContent || parentLabel?.textContent || '').trim();
+            if (labelText === target || labelText.startsWith(target)) {
               r.checked = true;
               r.dispatchEvent(new Event('change', {bubbles: true}));
               found = true;
@@ -132,6 +161,11 @@ def main():
         fields = json.loads(json_str)
     except json.JSONDecodeError as e:
         print(f"Invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(fields, dict):
+        print('Error: fill expects a JSON object, e.g. \'{"field":"value"}\'', file=sys.stderr)
+        print(f'Got: {type(fields).__name__} ({json_str[:50]})', file=sys.stderr)
         sys.exit(1)
 
     # Inject fields into JS and run single eval
