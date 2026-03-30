@@ -189,7 +189,6 @@ ACTION_TEMPLATES = {
     el.dispatchEvent(new PointerEvent('pointerup', evtOpts));
     el.dispatchEvent(new MouseEvent('mouseup', evtOpts));
     el.click();
-    el.dispatchEvent(new MouseEvent('click', evtOpts));
   }, 100);
 
   return JSON.stringify({ok: true, tag: el.tagName.toLowerCase(), ref: '%REF%', x: cx, y: cy});
